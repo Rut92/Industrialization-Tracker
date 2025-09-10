@@ -80,6 +80,7 @@ else:
             st.info("No rows found for this project.")
         else:
             display_df = df_final.copy()
+            display_df.insert(0, "S.No", range(1, len(display_df) + 1))
             display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
             display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
 
