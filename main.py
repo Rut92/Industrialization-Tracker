@@ -69,29 +69,17 @@ else:
     selected = st.sidebar.selectbox("Open project", list(project_map.keys()))
     pid = project_map[selected]
 
-    # Tabs: Project Info / Data Table
-    tab1, tab2 = st.tabs(["Project Info", "Project Data Table"])
+    # Tabs: Final Table / Editable Table
+    tab1, tab2 = st.tabs(["Final Table", "Edit Table"])
 
-    # ------------------ Tab 1: Project Info ------------------
+    # ------------------ Tab 1: Final Table ------------------
     with tab1:
-        st.header(f"Project: {selected}")
-        new_name = st.text_input("Rename project", value=selected)
-        if st.button("Update name", key="update_name"):
-            update_project_name(pid, new_name)
-            st.success("Name updated. Refresh to see updated index.")
-
-        st.subheader("Project Summary")
-        df_summary = get_project_data(pid)
-        st.write(f"Number of rows/items: {len(df_summary)}")
-
-    # ------------------ Tab 2: Project Data Table ------------------
-    with tab2:
-        df = get_project_data(pid)
-        if df.empty:
+        st.header(f"Project: {selected} - Final Table")
+        df_final = get_project_data(pid)
+        if df_final.empty:
             st.info("No rows found for this project.")
         else:
-            # Multi-level headers
-            display_df = df.copy()
+            display_df = df_final.copy()
             display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
             display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
 
@@ -108,17 +96,22 @@ else:
             display_df.columns = pd.MultiIndex.from_tuples(tuples)
             st.dataframe(display_df, width="stretch")
 
-            # Editable table
-            st.subheader("Edit Table Values")
-            edited = st.data_editor(df, num_rows="dynamic")
+            # Totals
+            total_old = df_final["current_price"].sum()
+            total_new = df_final["new_price"].sum()
+            st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
+            st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
+            st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
+
+    # ------------------ Tab 2: Editable Table ------------------
+    with tab2:
+        st.header(f"Project: {selected} - Editable Table")
+        df_edit = get_project_data(pid)
+        if df_edit.empty:
+            st.info("No rows found for this project.")
+        else:
+            edited = st.data_editor(df_edit, num_rows="dynamic")
 
             if st.button("Save edits", key="save_edits"):
                 save_project_data(pid, edited)
                 st.success("Saved changes.")
-
-            # Totals
-            total_old = edited["current_price"].sum()
-            total_new = edited["new_price"].sum()
-            st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
-            st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
-            st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
