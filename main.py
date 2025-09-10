@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
-from db_utils import init_db, add_project, get_projects, update_project_name, try_float
+from db_utils import init_db, add_project, get_projects, update_project_name, try_float, detect_header_and_read
 
 st.set_page_config(page_title="Industrialization Tracker", layout="wide")
 st.title("📊 Industrialization Tracker")
@@ -41,24 +41,20 @@ if st.sidebar.button("Add Project"):
         st.sidebar.error("Upload an Excel file.")
     else:
         try:
-            df_raw = pd.read_excel(uploaded_file, header=0, dtype=str)
-
-            # Simple column mapping
-            mapping = {
-                col: col.lower().replace(" ", "_") for col in df_raw.columns
-            }
-            df_raw.rename(columns=mapping, inplace=True)
+            # Flexible header detection
+            df_raw = detect_header_and_read(uploaded_file)
 
             required = [
                 "stockcode", "description", "ac_coverage",
-                "production_lt", "price", "fai_lt", "production_lt.1", "price.1"
+                "current_production_lt", "current_price",
+                "fai_lt", "new_supplier_production_lt", "new_price"
             ]
             missing = [c for c in required if c not in df_raw.columns]
             if missing:
-                st.sidebar.error("Missing columns: " + ", ".join(missing))
+                st.sidebar.error("Missing columns after mapping: " + ", ".join(missing))
             else:
                 # Clean numeric columns
-                for col in ["price", "price.1"]:
+                for col in ["current_price", "new_price"]:
                     df_raw[col] = pd.to_numeric(df_raw[col].apply(try_float), errors="coerce").fillna(0)
                 add_project(new_project_name, df_raw)
                 st.sidebar.success(f"Project '{new_project_name}' added.")
