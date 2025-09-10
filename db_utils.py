@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 
-DB_FILE = "projects.db"  # Updated database name
+DB_FILE = "projects.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -87,7 +87,7 @@ def save_project_data(project_id, df):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("DELETE FROM project_data WHERE project_id = ?", (project_id,))
-    for _, r in df.iterrows():
+    for _, row in df.iterrows():
         cur.execute("""
             INSERT INTO project_data (
                 project_id, stockcode, description, ac_coverage,
@@ -96,23 +96,71 @@ def save_project_data(project_id, df):
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             project_id,
-            r.get("stockcode"),
-            r.get("description"),
-            r.get("ac_coverage"),
-            r.get("current_production_lt"),
-            try_float(r.get("current_price")),
-            r.get("fai_lt"),
-            r.get("new_supplier_production_lt"),
-            try_float(r.get("new_price")),
+            row.get("stockcode"),
+            row.get("description"),
+            row.get("ac_coverage"),
+            row.get("current_production_lt"),
+            try_float(row.get("current_price")),
+            row.get("fai_lt"),
+            row.get("new_supplier_production_lt"),
+            try_float(row.get("new_price")),
         ))
     conn.commit()
     conn.close()
 
 def try_float(x):
-    if x is None or str(x).strip() == "":
+    if x is None:
         return None
-    x = str(x).replace("$","").replace(",","").strip()
+    x = str(x).strip().replace("$", "").replace(",", "")
     try:
         return float(x)
     except:
         return None
+
+def detect_header_and_read(uploaded_file, max_rows=10):
+    uploaded_file.seek(0)
+    raw = pd.read_excel(uploaded_file, header=None, dtype=str)
+    n = min(len(raw), max_rows)
+    expected_keywords = ["stock", "description", "ac coverage", "production", "price", "fai"]
+    header_row = None
+    for i in range(n):
+        row = raw.iloc[i].fillna("").astype(str).str.lower().tolist()
+        has_stock = any("stock" in x for x in row)
+        has_desc = any("description" in x for x in row)
+        keyword_matches = sum(any(kw in x for x in row) for kw in expected_keywords)
+        if has_stock and has_desc and keyword_matches >= 3:
+            header_row = i
+            break
+    if header_row is None:
+        header_row = 0
+    uploaded_file.seek(0)
+    df = pd.read_excel(uploaded_file, header=header_row, dtype=str)
+    mapping = {}
+    prod_count = 0
+    price_count = 0
+    for col in df.columns:
+        norm = str(col).strip().lower()
+        if "stock" in norm:
+            mapping[col] = "stockcode"
+        elif "description" in norm:
+            mapping[col] = "description"
+        elif "ac coverage" in norm:
+            mapping[col] = "ac_coverage"
+        elif "fai" in norm:
+            mapping[col] = "fai_lt"
+        elif "production" in norm:
+            if prod_count == 0:
+                mapping[col] = "current_production_lt"
+            else:
+                mapping[col] = "new_supplier_production_lt"
+            prod_count += 1
+        elif "price" in norm:
+            if price_count == 0:
+                mapping[col] = "current_price"
+            else:
+                mapping[col] = "new_price"
+            price_count += 1
+        else:
+            mapping[col] = norm.replace(" ", "_")
+    df.rename(columns=mapping, inplace=True)
+    return df
