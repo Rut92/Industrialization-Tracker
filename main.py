@@ -1,13 +1,14 @@
 import streamlit as st
-from db_utils import init_db, add_project, get_projects, update_project_name, try_float, detect_header_and_read
 import pandas as pd
 import io
+from db_utils import init_db, add_project, get_projects, update_project_name, get_project_data, save_project_data, try_float, detect_header_and_read
 
 st.set_page_config(page_title="Industrialization Tracker", layout="wide")
 st.title("📊 Industrialization Tracker")
 
 init_db()
 
+# ------------------ Sidebar: Create New Project ------------------
 st.sidebar.header("➕ Create New Project")
 new_project_name = st.sidebar.text_input("Project Name")
 uploaded_file = st.sidebar.file_uploader("Upload Excel (template below)", type=["xlsx"])
@@ -50,6 +51,7 @@ if st.sidebar.button("Add Project"):
             if missing:
                 st.sidebar.error("Missing columns after mapping: " + ", ".join(missing))
             else:
+                # Clean numeric columns
                 for col in ["current_price", "new_price"]:
                     df_raw[col] = pd.to_numeric(df_raw[col].apply(try_float), errors="coerce").fillna(0)
                 add_project(new_project_name, df_raw)
@@ -57,6 +59,7 @@ if st.sidebar.button("Add Project"):
         except Exception as e:
             st.sidebar.error(f"Failed to process file: {e}")
 
+# ------------------ Sidebar: Project Index ------------------
 st.sidebar.header("📂 Project Index")
 projects = get_projects()
 if not projects:
@@ -66,10 +69,56 @@ else:
     selected = st.sidebar.selectbox("Open project", list(project_map.keys()))
     pid = project_map[selected]
 
-    st.header(f"Project: {selected}")
-    new_name = st.text_input("Rename project", value=selected)
-    if st.button("Update name"):
-        update_project_name(pid, new_name)
-        st.success("Name updated. Refresh to see updated index.")
-    
-    st.markdown(f"Go to [Project Data Page](./project_data?project_id={pid}) to view/edit the data table.")
+    # Tabs: Project Info / Data Table
+    tab1, tab2 = st.tabs(["Project Info", "Project Data Table"])
+
+    # ------------------ Tab 1: Project Info ------------------
+    with tab1:
+        st.header(f"Project: {selected}")
+        new_name = st.text_input("Rename project", value=selected)
+        if st.button("Update name", key="update_name"):
+            update_project_name(pid, new_name)
+            st.success("Name updated. Refresh to see updated index.")
+
+        st.subheader("Project Summary")
+        df_summary = get_project_data(pid)
+        st.write(f"Number of rows/items: {len(df_summary)}")
+
+    # ------------------ Tab 2: Project Data Table ------------------
+    with tab2:
+        df = get_project_data(pid)
+        if df.empty:
+            st.info("No rows found for this project.")
+        else:
+            # Multi-level headers
+            display_df = df.copy()
+            display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
+            display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
+
+            tuples = [
+                ("General", "StockCode"),
+                ("General", "Description"),
+                ("Current Supplier", "AC Coverage (POs)"),
+                ("Current Supplier", "Production LT"),
+                ("Current Supplier", "Price"),
+                ("New Supplier", "FAI LT"),
+                ("New Supplier", "Production LT"),
+                ("New Supplier", "Price"),
+            ]
+            display_df.columns = pd.MultiIndex.from_tuples(tuples)
+            st.dataframe(display_df, width="stretch")
+
+            # Editable table
+            st.subheader("Edit Table Values")
+            edited = st.data_editor(df, num_rows="dynamic")
+
+            if st.button("Save edits", key="save_edits"):
+                save_project_data(pid, edited)
+                st.success("Saved changes.")
+
+            # Totals
+            total_old = edited["current_price"].sum()
+            total_new = edited["new_price"].sum()
+            st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
+            st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
+            st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
