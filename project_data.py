@@ -5,7 +5,6 @@ from db_utils import get_project_data, save_project_data, try_float
 st.set_page_config(page_title="Project Data", layout="wide")
 st.title("📋 Project Data Table")
 
-# Get project_id from query params
 query_params = st.experimental_get_query_params()
 if "project_id" not in query_params:
     st.error("No project selected. Go back to the main page.")
@@ -17,12 +16,10 @@ df = get_project_data(project_id)
 if df.empty:
     st.info("No rows found for this project.")
 else:
-    # Multi-level headers
     display_df = df.copy()
     display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
     display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
 
-    # Create MultiIndex columns
     tuples = [
         ("General", "StockCode"),
         ("General", "Description"),
@@ -34,10 +31,8 @@ else:
         ("New Supplier", "Price"),
     ]
     display_df.columns = pd.MultiIndex.from_tuples(tuples)
+    st.dataframe(display_df, width="stretch")
 
-    st.dataframe(display_df, width="stretch")  # Use 'stretch' for full container width
-
-    # Editable table below (flat columns)
     st.subheader("Edit Table Values")
     edited = st.data_editor(df, num_rows="dynamic")
 
@@ -45,7 +40,6 @@ else:
         save_project_data(project_id, edited)
         st.success("Saved changes.")
 
-    # Totals
     total_old = edited["current_price"].sum()
     total_new = edited["new_price"].sum()
     st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
