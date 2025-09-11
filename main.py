@@ -1,7 +1,11 @@
 import streamlit as st
 import pandas as pd
 import io
-from db_utils import init_db, add_project, get_projects, update_project_name, get_project_data, save_project_data, try_float, detect_header_and_read
+from db_utils import (
+    init_db, add_project, get_projects,
+    update_project_name, get_project_data,
+    save_project_data, try_float, detect_header_and_read
+)
 
 st.set_page_config(page_title="Industrialization Tracker", layout="wide")
 st.title("📊 Industrialization Tracker")
@@ -79,36 +83,14 @@ else:
         if df_final.empty:
             st.info("No rows found for this project.")
         else:
-            # User inputs for calculated columns
-            multiplier = st.number_input("Enter cost multiplier (%)", value=100, step=1)
-            additional_cost = st.number_input("Enter additional cost per item ($)", value=0, step=1)
-
-            display_df = df_final.copy()
+            # Reset index to remove default Pandas index
+            df_final = df_final.reset_index(drop=True)
 
             # Serial numbers starting from 1
-            display_df.insert(0, "S.No", range(1, len(display_df) + 1))
-
-            # Calculated columns
-            display_df["Adjusted Current Cost"] = display_df["current_price"] * (multiplier / 100) + additional_cost
-            display_df["Savings"] = display_df["current_price"] - display_df["new_price"]
-            display_df["New Supplier % of Current"] = display_df["new_price"] / display_df["current_price"] * 100
-
-            # Format price columns
-            for col in ["current_price", "new_price", "Adjusted Current Cost", "Savings"]:
-                display_df[col] = display_df[col].apply(lambda x: f"${x:,.2f}")
-            display_df["New Supplier % of Current"] = display_df["New Supplier % of Current"].apply(lambda x: f"{x:,.2f}%")
+            df_final.insert(0, "S.No", range(1, len(df_final) + 1))
 
             # Display table
-            st.dataframe(display_df, width="stretch")
-
-            # Totals
-            total_old = df_final["current_price"].sum()
-            total_new = df_final["new_price"].sum()
-            adjusted_total = (df_final["current_price"] * (multiplier / 100) + additional_cost).sum()
-            st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
-            st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
-            st.metric("Adjusted Total Current Cost", f"${adjusted_total:,.2f}")
-            st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
+            st.dataframe(df_final, width="stretch")
 
     # ------------------ Tab 2: Editable Table ------------------
     with tab2:
