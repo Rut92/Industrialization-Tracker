@@ -1,124 +1,134 @@
 import sqlite3
 import pandas as pd
 
-DB_FILE = "projects.db"
+DB_NAME = "projects.db"
 
-# ---- DB INIT ----
+def get_connection():
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_connection()
     cur = conn.cursor()
 
     # Projects table
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS projects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL
-    )
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE
+        )
     """)
 
-    # Project data table
+    # Procurement data
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS project_data (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER,
-        stockcode TEXT,
-        description TEXT,
-        ac_coverage TEXT,
-        current_production_lt TEXT,
-        current_price TEXT,
-        next_shortage_date TEXT,
-        fai_lt TEXT,
-        new_supplier_production_lt TEXT,
-        new_price TEXT,
-        fai_delivery_date TEXT,
-        fai_status TEXT DEFAULT 'Not Submitted',
-        fitcheck_status TEXT DEFAULT 'Not Scheduled',
-        fitcheck_ac TEXT,
-        first_production_po_delivery_date TEXT,
-        overlap_days INTEGER,
-        FOREIGN KEY(project_id) REFERENCES projects(id)
-    )
+        CREATE TABLE IF NOT EXISTS procurement (
+            project_id INTEGER,
+            stockcode TEXT,
+            description TEXT,
+            price REAL,
+            ac_coverage TEXT,
+            production_lt TEXT,
+            next_shortage_date TEXT,
+            current_supplier TEXT,
+            PRIMARY KEY (project_id, stockcode),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )
+    """)
+
+    # Industrialization data
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS industrialization (
+            project_id INTEGER,
+            stockcode TEXT,
+            description TEXT,
+            price REAL,
+            fai_lt TEXT,
+            production_lt TEXT,
+            fai_delivery_date TEXT,
+            first_po_delivery_date TEXT,
+            new_supplier TEXT,
+            PRIMARY KEY (project_id, stockcode),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )
+    """)
+
+    # Quality data
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS quality (
+            project_id INTEGER,
+            stockcode TEXT,
+            description TEXT,
+            fair_status TEXT,
+            fair_number TEXT,
+            fitcheck_ac TEXT,
+            fitcheck_date TEXT,
+            fitcheck_status TEXT,
+            PRIMARY KEY (project_id, stockcode),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )
     """)
 
     conn.commit()
     conn.close()
 
-# ---- Project Management ----
 def add_project(name):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_connection()
     cur = conn.cursor()
-    cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+    cur.execute("SELECT id FROM projects WHERE name = ?", (name,))
+    existing = cur.fetchone()
+    if existing:
+        project_id = existing[0]
+    else:
+        cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+        project_id = cur.lastrowid
     conn.commit()
-    pid = cur.lastrowid
     conn.close()
-    return pid
+    return project_id
 
 def get_projects():
-    conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT id, name FROM projects", conn)
+    conn = get_connection()
+    df = pd.read_sql_query("SELECT * FROM projects", conn)
     conn.close()
     return df
 
-def update_project_name(pid, new_name):
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("UPDATE projects SET name=? WHERE id=?", (new_name, pid))
-    conn.commit()
+def save_table(df, project_id, table_name):
+    conn = get_connection()
+    df.to_sql(table_name, conn, if_exists="replace", index=False)
     conn.close()
 
-# ---- Project Data ----
-def add_project_data(pid, df, replace=False):
-    conn = sqlite3.connect(DB_FILE)
-    if replace:
-        conn.execute("DELETE FROM project_data WHERE project_id=?", (pid,))
-    df = df.copy()
-    df["project_id"] = pid
-    df.to_sql("project_data", conn, if_exists="append", index=False)
+def get_project_data(project_id):
+    conn = get_connection()
+
+    # Procurement
+    df_proc = pd.read_sql_query(
+        "SELECT * FROM procurement WHERE project_id = ?", conn, params=(project_id,)
+    )
+
+    # Industrialization
+    df_ind = pd.read_sql_query(
+        "SELECT * FROM industrialization WHERE project_id = ?", conn, params=(project_id,)
+    )
+
+    # Quality
+    df_qual = pd.read_sql_query(
+        "SELECT * FROM quality WHERE project_id = ?", conn, params=(project_id,)
+    )
+
     conn.close()
 
-def get_project_data(pid):
-    conn = sqlite3.connect(DB_FILE)
-    query = """
-    SELECT stockcode, description, ac_coverage,
-           current_production_lt, current_price, next_shortage_date,
-           fai_lt, new_supplier_production_lt, new_price,
-           fai_delivery_date, fai_status, fitcheck_status,
-           fitcheck_ac, first_production_po_delivery_date, overlap_days
-    FROM project_data WHERE project_id=?
-    """
-    df = pd.read_sql_query(query, conn, params=(pid,))
-    conn.close()
+    # Merge all data
+    df_final = pd.merge(df_proc, df_ind, on=["project_id", "stockcode", "description"], how="outer", suffixes=("_proc", "_ind"))
+    df_final = pd.merge(df_final, df_qual, on=["project_id", "stockcode", "description"], how="outer")
 
-    # Auto-calc overlap_days
-    if not df.empty and "next_shortage_date" in df and "first_production_po_delivery_date" in df:
-        df["overlap_days"] = pd.to_datetime(df["next_shortage_date"], errors="coerce") - \
-                             pd.to_datetime(df["first_production_po_delivery_date"], errors="coerce")
-        df["overlap_days"] = df["overlap_days"].dt.days
+    # Calculate Overlap (Days)
+    if "next_shortage_date" in df_final and "first_po_delivery_date" in df_final:
+        try:
+            df_final["Overlap (Days)"] = (
+                pd.to_datetime(df_final["next_shortage_date"]) -
+                pd.to_datetime(df_final["first_po_delivery_date"])
+            ).dt.days
+        except Exception:
+            df_final["Overlap (Days)"] = None
+    else:
+        df_final["Overlap (Days)"] = None
 
-    return df
-
-# ---- File Upload ----
-def detect_header_and_read(uploaded_file):
-    df = pd.read_excel(uploaded_file)
-    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
-
-    col_map = {
-        "stockcode": "stockcode",
-        "description": "description",
-        "ac_coverage": "ac_coverage",
-        "production_lt": "current_production_lt",
-        "price": "current_price",
-        "next_shortage_date": "next_shortage_date",
-        "fai_lt": "fai_lt",
-        "production_lt.1": "new_supplier_production_lt",
-        "price.1": "new_price",
-        "fai_delivery_date": "fai_delivery_date",
-        "fai_status": "fai_status",
-        "fitcheck_status": "fitcheck_status",
-        "fitcheck_a/c": "fitcheck_ac",
-        "1st_production_po_delivery_date": "first_production_po_delivery_date",
-        "overlap_(days)": "overlap_days"
-    }
-
-    df = df.rename(columns={c: col_map[c] for c in df.columns if c in col_map})
-    return df
+    return df_final
