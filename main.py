@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+from datetime import datetime
 from db_utils import (
     init_db, add_project, get_projects,
     update_project_name, get_project_data,
@@ -55,9 +56,18 @@ if st.sidebar.button("Add Project"):
             if missing:
                 st.sidebar.error("Missing columns after mapping: " + ", ".join(missing))
             else:
-                # Clean numeric columns
                 for col in ["current_price", "new_price"]:
                     df_raw[col] = pd.to_numeric(df_raw[col].apply(try_float), errors="coerce").fillna(0)
+
+                # Add new columns with defaults
+                df_raw["next_shortage_date"] = ""
+                df_raw["fai_delivery_date"] = ""
+                df_raw["fai_status"] = "Not Submitted"
+                df_raw["fitcheck_status"] = "Not Scheduled"
+                df_raw["fitcheck_ac"] = ""
+                df_raw["first_production_po_delivery_date"] = ""
+                df_raw["overlap_days"] = ""
+
                 add_project(new_project_name, df_raw)
                 st.sidebar.success(f"Project '{new_project_name}' added.")
         except Exception as e:
@@ -73,57 +83,90 @@ else:
     selected = st.sidebar.selectbox("Open project", list(project_map.keys()))
     pid = project_map[selected]
 
-    # Tabs: Final Table / Editable Table
+    # Supplier names
+    current_supplier_name = st.sidebar.text_input("Current Supplier Name", value="Current Supplier")
+    new_supplier_name = st.sidebar.text_input("New Supplier Name", value="New Supplier")
+
     tab1, tab2 = st.tabs(["Final Table", "Edit Table"])
 
-    # ------------------ Tab 1: Final Table (read-only, no index shown) ------------------
+    # ------------------ Tab 1: Final Table ------------------
     with tab1:
         st.header(f"Project: {selected} - Final Table")
         df_final = get_project_data(pid)
         if df_final.empty:
             st.info("No rows found for this project.")
         else:
-            # Copy and format for presentation (do not change original df)
-            display_df = df_final.copy()
+            df_final = df_final.reset_index(drop=True)
 
-            # Format price columns for display (strings with $)
-            if "current_price" in display_df.columns:
-                display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
-            if "new_price" in display_df.columns:
-                display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
+            # Calculate Overlap (Days)
+            def calc_overlap(row):
+                try:
+                    if row["next_shortage_date"] and row["first_production_po_delivery_date"]:
+                        d1 = pd.to_datetime(row["next_shortage_date"])
+                        d2 = pd.to_datetime(row["first_production_po_delivery_date"])
+                        return (d1 - d2).days
+                except:
+                    return ""
+                return ""
+            df_final["overlap_days"] = df_final.apply(calc_overlap, axis=1)
 
-            # Use Styler to hide the index column so Streamlit doesn't render it
-            try:
-                styled = display_df.style.hide_index()
-                st.dataframe(styled, width="stretch")
-            except Exception:
-                # Fallback if hide_index() not available: reset_index and drop it, then render
-                display_df = display_df.reset_index(drop=True)
-                st.dataframe(display_df, width="stretch")
+            # Rename columns with indices [A], [B], etc.
+            column_labels = [
+                ("General", "[A] StockCode"),
+                ("General", "[B] Description"),
+                (current_supplier_name, "[C] AC Coverage (POs)"),
+                (current_supplier_name, "[D] Production LT"),
+                (current_supplier_name, "[E] Price"),
+                (current_supplier_name, "[F] Next Shortage Date"),
+                (new_supplier_name, "[G] FAI LT"),
+                (new_supplier_name, "[H] Production LT"),
+                (new_supplier_name, "[I] Price"),
+                (new_supplier_name, "[J] FAI Delivery Date"),
+                (new_supplier_name, "[K] FAI Status"),
+                (new_supplier_name, "[L] Fitcheck Status"),
+                (new_supplier_name, "[M] Fitcheck A/C"),
+                (new_supplier_name, "[N] 1st Production PO Delivery Date"),
+                (new_supplier_name, "[O] Overlap (Days)")
+            ]
+            df_display = df_final[
+                [
+                    "stockcode", "description", "ac_coverage", "current_production_lt", "current_price",
+                    "next_shortage_date", "fai_lt", "new_supplier_production_lt", "new_price",
+                    "fai_delivery_date", "fai_status", "fitcheck_status", "fitcheck_ac",
+                    "first_production_po_delivery_date", "overlap_days"
+                ]
+            ].copy()
+            df_display.columns = pd.MultiIndex.from_tuples(column_labels)
 
-            # Totals (use numeric df_final for sums)
-            try:
-                total_old = df_final["current_price"].sum()
-                total_new = df_final["new_price"].sum()
-                st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
-                st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
-                st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
-            except Exception:
-                # If numeric columns missing or malformed, skip totals gracefully
-                pass
+            st.dataframe(df_display, width="stretch")
 
-    # ------------------ Tab 2: Editable Table (no index shown) ------------------
+    # ------------------ Tab 2: Editable Table ------------------
     with tab2:
         st.header(f"Project: {selected} - Editable Table")
         df_edit = get_project_data(pid)
         if df_edit.empty:
             st.info("No rows found for this project.")
         else:
-            # Reset index so the data editor does not show the index column
-            df_edit_no_index = df_edit.reset_index(drop=True)
-            edited = st.data_editor(df_edit_no_index, num_rows="dynamic")
+            df_edit = df_edit.reset_index(drop=True)
+
+            # Editable table with dropdowns
+            edited = st.data_editor(
+                df_edit,
+                num_rows="dynamic",
+                column_config={
+                    "fai_status": st.column_config.SelectboxColumn(
+                        "FAI Status",
+                        options=["Not Submitted", "Under Review", "Failed", "Passed"],
+                        default="Not Submitted"
+                    ),
+                    "fitcheck_status": st.column_config.SelectboxColumn(
+                        "Fitcheck Status",
+                        options=["Not Scheduled", "Scheduled", "Failed", "Passed"],
+                        default="Not Scheduled"
+                    ),
+                }
+            )
 
             if st.button("Save edits", key="save_edits"):
-                # Save back to DB
                 save_project_data(pid, edited)
                 st.success("Saved changes.")
