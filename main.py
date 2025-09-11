@@ -1,113 +1,95 @@
 import streamlit as st
 import pandas as pd
-from db_utils import init_db, add_project, get_projects, save_table, get_project_data
+from io import BytesIO
+import db_utils
 
-st.set_page_config(page_title="Industrialization Tracker", layout="wide")
-init_db()
+st.set_page_config(page_title="📊 Industrialization Tracker", layout="wide")
+
+db_utils.init_db()
 
 st.title("📊 Industrialization Tracker")
 
-# --- Project creation ---
-with st.sidebar:
-    st.header("Project Management")
-    new_project_name = st.text_input("Enter new project name")
+# ---------------- Project Selector ---------------- #
+projects = db_utils.get_projects()
+project_names = [p[1] for p in projects]
+project_lookup = {p[1]: p[0] for p in projects}
+
+selected_project = st.selectbox("Select a project", [""] + project_names)
+
+with st.expander("➕ Create a new project"):
+    new_project_name = st.text_input("Project name")
+    uploaded_list = st.file_uploader("Upload Stock Codes & Descriptions (Excel)", type=["xlsx"])
     if st.button("Create Project"):
-        if new_project_name.strip():
-            pid = add_project(new_project_name.strip())
-            st.success(f"Project '{new_project_name}' created or opened successfully!")
-            st.session_state["current_project"] = pid
+        if new_project_name.strip() != "":
+            db_utils.add_project(new_project_name.strip())
+            st.success(f"Project '{new_project_name}' created! Refresh dropdown to see it.")
+        else:
+            st.error("Please enter a project name.")
 
-    projects = get_projects()
-    if not projects.empty:
-        selected_project = st.selectbox("Select Project", projects["name"].tolist())
-        if selected_project:
-            pid = projects.loc[projects["name"] == selected_project, "id"].values[0]
-            st.session_state["current_project"] = pid
+# ---------------- Utility: Download template ---------------- #
+def download_excel_template(columns, filename):
+    df_template = pd.DataFrame(columns=columns)
+    buffer = BytesIO()
+    df_template.to_excel(buffer, index=False)
+    st.download_button(
+        label=f"📥 Download {filename} Template",
+        data=buffer.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-if "current_project" not in st.session_state:
-    st.warning("Please create or select a project to continue.")
-    st.stop()
+# ---------------- Tabs ---------------- #
+if selected_project:
+    pid = project_lookup[selected_project]
+    tabs = st.tabs(["Summary", "Procurement", "Industrialization", "Quality"])
 
-pid = st.session_state["current_project"]
+    # Summary Tab
+    with tabs[0]:
+        st.subheader("📌 Summary")
+        df_summary = db_utils.get_project_data(pid)
+        if df_summary.empty:
+            st.info("No data available yet for this project.")
+        else:
+            st.dataframe(df_summary, use_container_width=True)
 
-# --- Tabs ---
-tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Procurement", "Industrialization", "Quality"])
+    # Procurement Tab
+    with tabs[1]:
+        st.subheader("📦 Procurement Data")
+        cols = ["stockcode", "description", "current_supplier", "price", "ac_coverage", "production_lt", "next_shortage_date"]
 
-# --- Procurement ---
-with tab2:
-    st.subheader("Procurement Data")
-    current_supplier = st.text_input("Enter Current Supplier", value="Current Supplier")
-    uploaded_file = st.file_uploader("Upload Procurement Excel", type=["xlsx"], key="proc_upload")
-    if uploaded_file:
-        df_proc = pd.read_excel(uploaded_file)
-        df_proc["project_id"] = pid
-        df_proc["current_supplier"] = current_supplier
-        save_table(df_proc, pid, "procurement")
-        st.success("Procurement data uploaded successfully!")
-        st.experimental_rerun()
+        download_excel_template(cols, "Procurement.xlsx")
+        upload_file = st.file_uploader("Upload Procurement Data", type=["xlsx"], key="proc_upload")
 
-    st.info("Template columns: stockcode, description, Price, AC Coverage, Production LT, Next Shortage Date")
+        if upload_file:
+            df = pd.read_excel(upload_file)
+            db_utils.clear_table(pid, "procurement")
+            db_utils.save_table(df, pid, "procurement")
+            st.success("Procurement data uploaded successfully!")
 
-# --- Industrialization ---
-with tab3:
-    st.subheader("Industrialization Data")
-    new_supplier = st.text_input("Enter New Supplier", value="New Supplier")
-    uploaded_file = st.file_uploader("Upload Industrialization Excel", type=["xlsx"], key="ind_upload")
-    if uploaded_file:
-        df_ind = pd.read_excel(uploaded_file)
-        df_ind["project_id"] = pid
-        df_ind["new_supplier"] = new_supplier
-        save_table(df_ind, pid, "industrialization")
-        st.success("Industrialization data uploaded successfully!")
-        st.experimental_rerun()
+    # Industrialization Tab
+    with tabs[2]:
+        st.subheader("🏭 Industrialization Data")
+        cols = ["stockcode", "description", "new_supplier", "price", "fai_lt", "production_lt", "fai_delivery_date", "first_prod_po_date"]
 
-    st.info("Template columns: stockcode, description, Price, FAI LT, Production LT, FAI Delivery Date, 1st Production PO delivery Date")
+        download_excel_template(cols, "Industrialization.xlsx")
+        upload_file = st.file_uploader("Upload Industrialization Data", type=["xlsx"], key="ind_upload")
 
-# --- Quality ---
-with tab4:
-    st.subheader("Quality Data")
-    uploaded_file = st.file_uploader("Upload Quality Excel", type=["xlsx"], key="qual_upload")
-    if uploaded_file:
-        df_qual = pd.read_excel(uploaded_file)
-        df_qual["project_id"] = pid
-        save_table(df_qual, pid, "quality")
-        st.success("Quality data uploaded successfully!")
-        st.experimental_rerun()
+        if upload_file:
+            df = pd.read_excel(upload_file)
+            db_utils.clear_table(pid, "industrialization")
+            db_utils.save_table(df, pid, "industrialization")
+            st.success("Industrialization data uploaded successfully!")
 
-    st.info("Template columns: stockcode, description, FAIR Status, FAIR#, Fitcheck AC, Fitcheck Date, Fitcheck Status")
+    # Quality Tab
+    with tabs[3]:
+        st.subheader("✅ Quality Data")
+        cols = ["stockcode", "description", "fair_status", "fair_number", "fitcheck_ac", "fitcheck_date", "fitcheck_status"]
 
-# --- Summary ---
-with tab1:
-    st.subheader("Summary Table")
-    df_final = get_project_data(pid)
+        download_excel_template(cols, "Quality.xlsx")
+        upload_file = st.file_uploader("Upload Quality Data", type=["xlsx"], key="qual_upload")
 
-    if not df_final.empty:
-        # Grouped headers
-        multi_columns = pd.MultiIndex.from_tuples([
-            ("", "Stockcode"),
-            ("", "Description"),
-            ("Procurement", "Price"),
-            ("Procurement", "AC Coverage"),
-            ("Procurement", "Production LT"),
-            ("Procurement", "Next Shortage Date"),
-            ("Procurement", "Current Supplier"),
-            ("Industrialization", "Price"),
-            ("Industrialization", "FAI LT"),
-            ("Industrialization", "Production LT"),
-            ("Industrialization", "FAI Delivery Date"),
-            ("Industrialization", "1st Production PO delivery Date"),
-            ("Industrialization", "New Supplier"),
-            ("Quality", "FAI Status"),
-            ("Quality", "FAI Number"),
-            ("Quality", "Fitcheck AC"),
-            ("Quality", "Fitcheck Date"),
-            ("Quality", "Fitcheck Status"),
-            ("Industrialization", "Overlap (Days)")
-        ])
-
-        df_final = df_final.reindex(columns=[c[1] for c in multi_columns], fill_value="")
-        df_final.columns = multi_columns
-
-        st.dataframe(df_final, width="stretch")
-    else:
-        st.info("No data available yet for this project.")
+        if upload_file:
+            df = pd.read_excel(upload_file)
+            db_utils.clear_table(pid, "quality")
+            db_utils.save_table(df, pid, "quality")
+            st.success("Quality data uploaded successfully!")
