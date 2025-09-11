@@ -11,7 +11,7 @@ st.title("📊 Industrialization Tracker")
 # --- Create new project ---
 with st.expander("➕ Create New Project"):
     new_project_name = st.text_input("Project Name")
-    uploaded_file = st.file_uploader("Upload Stock Codes & Descriptions", type=["xlsx"])
+    uploaded_file = st.file_uploader("Upload Stock Codes & Descriptions (Excel)", type=["xlsx"])
 
     if st.button("Create Project"):
         if new_project_name.strip():
@@ -24,8 +24,6 @@ with st.expander("➕ Create New Project"):
             pid = db_utils.add_project(new_project_name.strip(), stockcodes_df)
             if pid:
                 st.success(f"Project '{new_project_name}' created or opened.")
-            else:
-                st.warning(f"Project '{new_project_name}' already exists.")
         else:
             st.error("Enter a project name.")
 
@@ -38,6 +36,10 @@ if projects.empty:
 project_map = {name: pid for pid, name in projects.values}
 selected_name = st.selectbox("Select Project", list(project_map.keys()))
 pid = project_map[selected_name]
+
+# Debug mode: show raw projects table
+if st.checkbox("🔍 Show raw projects table"):
+    st.write(projects)
 
 # --- Tabs ---
 tab1, tab2, tab3, tab4 = st.tabs(["📌 Summary", "📦 Procurement", "🏭 Industrialization", "✅ Quality"])
@@ -60,7 +62,6 @@ with tab2:
     st.subheader("📦 Procurement Data")
     cols = ["StockCode", "Description", "CurrentSupplier", "Price", "AC_Coverage", "Production_LT", "Next_Shortage_Date"]
 
-    # Template
     df_template = pd.DataFrame(columns=cols)
     buffer = BytesIO()
     df_template.to_excel(buffer, index=False)
