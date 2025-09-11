@@ -26,13 +26,13 @@ with st.expander("➕ Create a new project"):
 
             pid = db_utils.add_project(new_project_name.strip(), stockcodes_df)
             if pid:
-                st.success(f"Project '{new_project_name}' created successfully!")
+                st.success(f"Project '{new_project_name.strip()}' created successfully!")
             else:
-                st.warning(f"Project '{new_project_name}' already exists.")
+                st.warning(f"Project '{new_project_name.strip()}' already exists.")
 
 # ------------------ Select project ------------------ #
-# Refresh project list after creation
 projects = db_utils.get_projects()  # returns list of (id, name)
+projects = [(pid, name.strip()) for pid, name in projects]  # strip whitespace
 project_dict = {name: pid for pid, name in projects}
 
 if not project_dict:
