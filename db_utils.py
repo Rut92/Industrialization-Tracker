@@ -1,6 +1,6 @@
 import sqlite3
 import pandas as pd
-import streamlit as st  # for error messages in get_project_data
+import streamlit as st  # for error reporting in get_project_data
 
 DB_FILE = "projects.db"
 
@@ -88,7 +88,9 @@ def init_db():
 def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
+    pid = None
     try:
+        name = name.strip()
         cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
         pid = cur.lastrowid
 
