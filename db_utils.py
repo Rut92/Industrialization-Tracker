@@ -1,13 +1,14 @@
 import sqlite3
 import pandas as pd
+import streamlit as st  # for error messages in get_project_data
 
 DB_FILE = "projects.db"
 
-
+# ------------------ DB Connection ------------------ #
 def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
-
+# ------------------ Initialize DB ------------------ #
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
@@ -20,7 +21,7 @@ def init_db():
         )
     """)
 
-    # Master stock list (common to all tabs)
+    # Master stock list
     cur.execute("""
         CREATE TABLE IF NOT EXISTS stock_list (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +84,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-
+# ------------------ Add Project ------------------ #
 def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
@@ -108,7 +109,7 @@ def add_project(name, stockcodes_df=None):
 
     return pid
 
-
+# ------------------ Get Projects ------------------ #
 def get_projects():
     conn = get_connection()
     cur = conn.cursor()
@@ -117,35 +118,36 @@ def get_projects():
     conn.close()
     return rows
 
-
+# ------------------ Get Project Data ------------------ #
 def get_project_data(project_id):
     conn = get_connection()
+    
     query = """
         SELECT 
-            sl.stockcode AS [A]StockCode,
-            sl.description AS [B]Description,
+            sl.stockcode AS StockCode,
+            sl.description AS Description,
 
             -- Procurement
-            pr.current_supplier AS [C]CurrentSupplier,
-            pr.price AS [D]Price,
-            pr.ac_coverage AS [E]AC_Coverage,
-            pr.production_lt AS [F]Production_LT,
-            pr.next_shortage_date AS [G]Next_Shortage_Date,
+            pr.current_supplier AS CurrentSupplier,
+            pr.price AS CurrentPrice,
+            pr.ac_coverage AS ACCoverage,
+            pr.production_lt AS ProductionLT,
+            pr.next_shortage_date AS NextShortageDate,
 
             -- Industrialization
-            ind.new_supplier AS [H]NewSupplier,
-            ind.price AS [I]Price,
-            ind.fai_lt AS [J]FAI_LT,
-            ind.production_lt AS [K]Production_LT,
-            ind.fai_delivery_date AS [L]FAI_Delivery_Date,
-            ind.first_po_delivery_date AS [M]First_PO_Delivery_Date,
+            ind.new_supplier AS NewSupplier,
+            ind.price AS NewPrice,
+            ind.fai_lt AS FAI_LT,
+            ind.production_lt AS IndProductionLT,
+            ind.fai_delivery_date AS FAIDeliveryDate,
+            ind.first_po_delivery_date AS FirstPODeliveryDate,
 
             -- Quality
-            q.fai_status AS [N]FAI_Status,
-            q.fai_number AS [O]FAI_Number,
-            q.fitcheck_ac AS [P]Fitcheck_AC,
-            q.fitcheck_date AS [Q]Fitcheck_Date,
-            q.fitcheck_status AS [R]Fitcheck_Status
+            q.fai_status AS FAI_Status,
+            q.fai_number AS FAI_Number,
+            q.fitcheck_ac AS FitcheckAC,
+            q.fitcheck_date AS FitcheckDate,
+            q.fitcheck_status AS FitcheckStatus
 
         FROM stock_list sl
         LEFT JOIN procurement pr 
@@ -156,14 +158,21 @@ def get_project_data(project_id):
             ON sl.project_id = q.project_id AND sl.stockcode = q.stockcode
         WHERE sl.project_id = ?
     """
-    df = pd.read_sql_query(query, conn, params=(project_id,))
-    conn.close()
 
-    # Add Overlap column
-    if not df.empty:
-        df["[S]Overlap_Days"] = (
-            pd.to_datetime(df["[G]Next_Shortage_Date"], errors="coerce")
-            - pd.to_datetime(df["[M]First_PO_Delivery_Date"], errors="coerce")
-        ).dt.days
+    try:
+        df = pd.read_sql_query(query, conn, params=(project_id,))
+        
+        # Add Overlap column
+        if not df.empty:
+            df["OverlapDays"] = (
+                pd.to_datetime(df["NextShortageDate"], errors="coerce")
+                - pd.to_datetime(df["FirstPODeliveryDate"], errors="coerce")
+            ).dt.days
+
+    except Exception as e:
+        st.error(f"Error fetching project data: {e}")
+        df = pd.DataFrame()
+    finally:
+        conn.close()
 
     return df
