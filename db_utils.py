@@ -85,23 +85,22 @@ def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
 
-    # Check if exists
+    # Always insert or reuse existing
+    cur.execute("INSERT OR IGNORE INTO projects (name) VALUES (?)", (name,))
+    conn.commit()
+
+    # Get project id
     cur.execute("SELECT id FROM projects WHERE name = ?", (name,))
-    row = cur.fetchone()
-    if row:
-        pid = row[0]
-    else:
-        cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
-        pid = cur.lastrowid
+    pid = cur.fetchone()[0]
 
-        # Save stock list if provided
-        if stockcodes_df is not None:
-            for _, row in stockcodes_df.iterrows():
-                cur.execute("""
-                    INSERT INTO stock_list (project_id, stockcode, description)
-                    VALUES (?, ?, ?)
-                """, (pid, row["StockCode"], row["Description"]))
-
+    # If stock list provided, clear and re-add
+    if stockcodes_df is not None:
+        cur.execute("DELETE FROM stock_list WHERE project_id = ?", (pid,))
+        for _, row in stockcodes_df.iterrows():
+            cur.execute(
+                "INSERT INTO stock_list (project_id, stockcode, description) VALUES (?, ?, ?)",
+                (pid, row["StockCode"], row["Description"])
+            )
     conn.commit()
     conn.close()
     return pid
