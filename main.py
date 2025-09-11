@@ -1,198 +1,123 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
-from db_utils import (
-    init_db,
-    add_project,
-    get_projects,
-    add_project_data,
-    get_project_data,
-)
+from db_utils import init_db, add_project, get_projects, save_table, get_project_data
+
+st.set_page_config(page_title="📊 Industrialization Tracker", layout="wide")
 
 # Initialize DB
 init_db()
-st.set_page_config(page_title="📊 Industrialization Tracker", layout="wide")
-st.title("📊 Industrialization Tracker")
 
-# Sidebar - Manage projects
-st.sidebar.header("📁 Projects")
+# Sidebar - project selection/creation
+st.sidebar.header("📁 Project Management")
 
 projects = get_projects()
-project_names = [p[1] for p in projects]
-project_ids = [p[0] for p in projects]
+project_names = projects["name"].tolist() if not projects.empty else []
 
-# ========== Create New Project ==========
-with st.sidebar.expander("➕ Create Project"):
-    new_project_name = st.text_input("Project Name")
-    uploaded_master = st.file_uploader(
-        "Upload Stock Codes & Descriptions (Excel)",
-        type=["xlsx"],
-        key="proj_upload"
-    )
+selected_project = st.sidebar.selectbox("Select Project", [""] + project_names)
 
-    if st.button("Create Project"):
-        if not new_project_name.strip():
-            st.error("❌ Project name is required")
-        elif uploaded_master is None:
-            st.error("❌ Please upload stock codes & descriptions Excel")
-        else:
-            # Read stock codes & descriptions
-            df_master = pd.read_excel(uploaded_master)
-            if not {"stockcode", "description"}.issubset(df_master.columns.str.lower()):
-                st.error("❌ Excel must have 'stockcode' and 'description' columns.")
-            else:
-                add_project(new_project_name.strip())
-                st.success(f"✅ Project '{new_project_name}' created!")
-                st.rerun()
+new_project_name = st.sidebar.text_input("Create New Project")
+if st.sidebar.button("➕ Create Project") and new_project_name.strip():
+    project_id = add_project(new_project_name.strip())
+    if new_project_name.strip() in project_names:
+        st.sidebar.info(f"Project '{new_project_name}' already exists. Opening existing project.")
+    else:
+        st.sidebar.success(f"Project '{new_project_name}' created successfully!")
+    selected_project = new_project_name.strip()
 
-# ========== Select Project ==========
-selected_project = st.sidebar.selectbox("Select Project", project_names)
+if not selected_project:
+    st.warning("Please select or create a project to continue.")
+    st.stop()
 
-if selected_project:
-    pid = project_ids[project_names.index(selected_project)]
+# Get project_id
+projects = get_projects()
+pid = projects.loc[projects["name"] == selected_project, "id"].values[0]
 
-    # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📑 Summary",
-        "📦 Procurement",
-        "🏭 Industrialization",
-        "✅ Quality"
-    ])
+# Tabs
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "📦 Procurement", "🏭 Industrialization", "✅ Quality"])
 
-    # ---------------- TAB 1: SUMMARY ----------------
-    with tab1:
-        st.header(f"Summary - {selected_project}")
-        df_summary = get_project_data(pid)
+# ================= TAB 1: SUMMARY =================
+with tab1:
+    st.subheader("📊 Project Summary")
+    df_final = get_project_data(pid)
 
-        if df_summary.empty:
-            st.info("Upload data in Procurement, Industrialization, or Quality tabs.")
-        else:
-            # Calculate Overlap (Days)
-            df_summary["overlap_days"] = pd.to_datetime(
-                df_summary["next_shortage_date"], errors="coerce"
-            ) - pd.to_datetime(
-                df_summary["first_production_po_delivery_date"], errors="coerce"
-            )
-            df_summary["overlap_days"] = df_summary["overlap_days"].dt.days
+    if not df_final.empty:
+        # Grouped headers
+        grouped_headers = pd.MultiIndex.from_tuples([
+            ("", "Stockcode"),
+            ("", "Description"),
+            ("Procurement", "Price"),
+            ("Procurement", "AC Coverage"),
+            ("Procurement", "Production LT"),
+            ("Procurement", "Next Shortage Date"),
+            ("Procurement", "Current Supplier"),
+            ("Industrialization", "Price"),
+            ("Industrialization", "FAI LT"),
+            ("Industrialization", "Production LT"),
+            ("Industrialization", "FAI Delivery Date"),
+            ("Industrialization", "1st Production PO Delivery Date"),
+            ("Industrialization", "New Supplier"),
+            ("Industrialization", "Overlap (Days)"),
+            ("Quality", "FAIR Status"),
+            ("Quality", "FAIR#"),
+            ("Quality", "Fitcheck AC"),
+            ("Quality", "Fitcheck Date"),
+            ("Quality", "Fitcheck Status")
+        ])
 
-            # Column groups
-            procurement_cols = [
-                "price", "ac_coverage", "production_lt", "next_shortage_date"
-            ]
-            indust_cols = [
-                "price_new", "fai_lt", "production_lt_ind", "fai_delivery_date",
-                "first_production_po_delivery_date", "overlap_days"
-            ]
-            quality_cols = [
-                "fai_status", "fai_no", "fitcheck_ac", "fitcheck_date", "fitcheck_status"
-            ]
+        df_final.columns = grouped_headers
+        st.dataframe(df_final, use_container_width=True)
 
-            column_order = ["stockcode", "description"] + \
-                           procurement_cols + indust_cols + quality_cols
+    else:
+        st.info("No data yet. Add details in the Procurement, Industrialization, or Quality tabs.")
 
-            df_display = df_summary[column_order]
+# ================= TAB 2: PROCUREMENT =================
+with tab2:
+    st.subheader("📦 Procurement Data")
+    st.info("Upload or edit procurement data here.")
+    current_supplier = st.text_input("Enter Current Supplier Name", "Current Supplier")
 
-            # Label columns with groups
-            col_labels = {
-                "stockcode": "[A] Stockcode",
-                "description": "[B] Description",
-                "price": "[C] Price",
-                "ac_coverage": "[D] AC Coverage",
-                "production_lt": "[E] Production LT",
-                "next_shortage_date": "[F] Next Shortage Date",
-                "price_new": "[G] Price",
-                "fai_lt": "[H] FAI LT",
-                "production_lt_ind": "[I] Production LT",
-                "fai_delivery_date": "[J] FAI Delivery Date",
-                "first_production_po_delivery_date": "[K] 1st Production PO Date",
-                "overlap_days": "[L] Overlap (Days)",
-                "fai_status": "[M] FAI Status",
-                "fai_no": "[N] FAI#",
-                "fitcheck_ac": "[O] Fitcheck AC",
-                "fitcheck_date": "[P] Fitcheck Date",
-                "fitcheck_status": "[Q] Fitcheck Status"
-            }
+    uploaded_file = st.file_uploader("Upload Procurement Excel", type=["xlsx"])
+    if uploaded_file:
+        df_proc = pd.read_excel(uploaded_file)
+        df_proc["project_id"] = pid
+        df_proc["current_supplier"] = current_supplier
+        save_table(df_proc, pid, "procurement")
+        st.success("Procurement data uploaded successfully!")
 
-            df_display = df_display.rename(columns=col_labels)
+    st.download_button("📥 Download Procurement Template",
+                       pd.DataFrame(columns=["stockcode", "description", "price", "ac_coverage", "production_lt", "next_shortage_date"]).to_csv(index=False),
+                       "procurement_template.csv", "text/csv")
 
-            st.dataframe(df_display, use_container_width=True)
+# ================= TAB 3: INDUSTRIALIZATION =================
+with tab3:
+    st.subheader("🏭 Industrialization Data")
+    st.info("Upload or edit industrialization data here.")
+    new_supplier = st.text_input("Enter New Supplier Name", "New Supplier")
 
-    # ---------------- TAB 2: PROCUREMENT ----------------
-    with tab2:
-        st.header("Procurement Data")
+    uploaded_file = st.file_uploader("Upload Industrialization Excel", type=["xlsx"])
+    if uploaded_file:
+        df_ind = pd.read_excel(uploaded_file)
+        df_ind["project_id"] = pid
+        df_ind["new_supplier"] = new_supplier
+        save_table(df_ind, pid, "industrialization")
+        st.success("Industrialization data uploaded successfully!")
 
-        # Template download
-        template = pd.DataFrame(columns=["stockcode", "description", "price", "ac_coverage", "production_lt", "next_shortage_date"])
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            template.to_excel(writer, index=False)
-        st.download_button("⬇️ Download Procurement Template", data=buffer.getvalue(), file_name="procurement_template.xlsx")
+    st.download_button("📥 Download Industrialization Template",
+                       pd.DataFrame(columns=["stockcode", "description", "price", "fai_lt", "production_lt", "fai_delivery_date", "first_po_delivery_date"]).to_csv(index=False),
+                       "industrialization_template.csv", "text/csv")
 
-        upload_file = st.file_uploader("Upload Procurement Data (Excel)", type=["xlsx"], key="proc_upload")
-        if upload_file:
-            df_upload = pd.read_excel(upload_file)
-            add_project_data(pid, df_upload, replace=False)
-            st.success("✅ Procurement data uploaded!")
+# ================= TAB 4: QUALITY =================
+with tab4:
+    st.subheader("✅ Quality Data")
+    st.info("Upload or edit quality data here.")
 
-        # Editable table
-        df_proc = get_project_data(pid)
-        if not df_proc.empty:
-            cols = ["stockcode", "description", "price", "ac_coverage", "production_lt", "next_shortage_date"]
-            df_edit = df_proc[cols]
-            edited = st.data_editor(df_edit, use_container_width=True, num_rows="dynamic")
-            if st.button("💾 Save Procurement"):
-                add_project_data(pid, edited, replace=False)
-                st.success("Saved Procurement data!")
-                st.rerun()
+    uploaded_file = st.file_uploader("Upload Quality Excel", type=["xlsx"])
+    if uploaded_file:
+        df_qual = pd.read_excel(uploaded_file)
+        df_qual["project_id"] = pid
+        save_table(df_qual, pid, "quality")
+        st.success("Quality data uploaded successfully!")
 
-    # ---------------- TAB 3: INDUSTRIALIZATION ----------------
-    with tab3:
-        st.header("Industrialization Data")
-
-        template = pd.DataFrame(columns=["stockcode", "description", "price_new", "fai_lt", "production_lt_ind", "fai_delivery_date", "first_production_po_delivery_date"])
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            template.to_excel(writer, index=False)
-        st.download_button("⬇️ Download Industrialization Template", data=buffer.getvalue(), file_name="industrialization_template.xlsx")
-
-        upload_file = st.file_uploader("Upload Industrialization Data (Excel)", type=["xlsx"], key="ind_upload")
-        if upload_file:
-            df_upload = pd.read_excel(upload_file)
-            add_project_data(pid, df_upload, replace=False)
-            st.success("✅ Industrialization data uploaded!")
-
-        df_ind = get_project_data(pid)
-        if not df_ind.empty:
-            cols = ["stockcode", "description", "price_new", "fai_lt", "production_lt_ind", "fai_delivery_date", "first_production_po_delivery_date"]
-            df_edit = df_ind[cols]
-            edited = st.data_editor(df_edit, use_container_width=True, num_rows="dynamic")
-            if st.button("💾 Save Industrialization"):
-                add_project_data(pid, edited, replace=False)
-                st.success("Saved Industrialization data!")
-                st.rerun()
-
-    # ---------------- TAB 4: QUALITY ----------------
-    with tab4:
-        st.header("Quality Data")
-
-        template = pd.DataFrame(columns=["stockcode", "description", "fai_status", "fai_no", "fitcheck_ac", "fitcheck_date", "fitcheck_status"])
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            template.to_excel(writer, index=False)
-        st.download_button("⬇️ Download Quality Template", data=buffer.getvalue(), file_name="quality_template.xlsx")
-
-        upload_file = st.file_uploader("Upload Quality Data (Excel)", type=["xlsx"], key="qual_upload")
-        if upload_file:
-            df_upload = pd.read_excel(upload_file)
-            add_project_data(pid, df_upload, replace=False)
-            st.success("✅ Quality data uploaded!")
-
-        df_q = get_project_data(pid)
-        if not df_q.empty:
-            cols = ["stockcode", "description", "fai_status", "fai_no", "fitcheck_ac", "fitcheck_date", "fitcheck_status"]
-            df_edit = df_q[cols]
-            edited = st.data_editor(df_edit, use_container_width=True, num_rows="dynamic")
-            if st.button("💾 Save Quality"):
-                add_project_data(pid, edited, replace=False)
-                st.success("Saved Quality data!")
-                st.rerun()
+    st.download_button("📥 Download Quality Template",
+                       pd.DataFrame(columns=["stockcode", "description", "fair_status", "fair_number", "fitcheck_ac", "fitcheck_date", "fitcheck_status"]).to_csv(index=False),
+                       "quality_template.csv", "text/csv")
