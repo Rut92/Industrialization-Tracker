@@ -12,7 +12,7 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
-    # Projects table
+    # Projects
     cur.execute("""
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,7 +20,7 @@ def init_db():
         )
     """)
 
-    # Master stock list
+    # Stock list
     cur.execute("""
         CREATE TABLE IF NOT EXISTS stock_list (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +31,7 @@ def init_db():
         )
     """)
 
-    # Procurement table
+    # Procurement
     cur.execute("""
         CREATE TABLE IF NOT EXISTS procurement (
             project_id INTEGER NOT NULL,
@@ -46,7 +46,7 @@ def init_db():
         )
     """)
 
-    # Industrialization table
+    # Industrialization
     cur.execute("""
         CREATE TABLE IF NOT EXISTS industrialization (
             project_id INTEGER NOT NULL,
@@ -62,7 +62,7 @@ def init_db():
         )
     """)
 
-    # Quality table
+    # Quality
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quality (
             project_id INTEGER NOT NULL,
@@ -85,15 +85,15 @@ def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
 
-    # Always insert or reuse existing
+    # Insert or reuse existing
     cur.execute("INSERT OR IGNORE INTO projects (name) VALUES (?)", (name,))
     conn.commit()
 
-    # Get project id
+    # Get id
     cur.execute("SELECT id FROM projects WHERE name = ?", (name,))
     pid = cur.fetchone()[0]
 
-    # If stock list provided, clear and re-add
+    # Save stock list if uploaded
     if stockcodes_df is not None:
         cur.execute("DELETE FROM stock_list WHERE project_id = ?", (pid,))
         for _, row in stockcodes_df.iterrows():
