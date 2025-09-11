@@ -1,51 +1,63 @@
 import sqlite3
 import pandas as pd
-import json
 
 DB_FILE = "projects.db"
 
-# ------------------ Init ------------------
+# ---- DB INIT ----
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
 
     # Projects table
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS projects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )
+    CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL
+    )
     """)
 
-    # Data table (stores JSON string)
+    # Project data table
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS project_data (
-            project_id INTEGER,
-            data TEXT,
-            FOREIGN KEY (project_id) REFERENCES projects(id)
-        )
+    CREATE TABLE IF NOT EXISTS project_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        stockcode TEXT,
+        description TEXT,
+        ac_coverage TEXT,
+        current_production_lt TEXT,
+        current_price TEXT,
+        next_shortage_date TEXT,
+        fai_lt TEXT,
+        new_supplier_production_lt TEXT,
+        new_price TEXT,
+        fai_delivery_date TEXT,
+        fai_status TEXT DEFAULT 'Not Submitted',
+        fitcheck_status TEXT DEFAULT 'Not Scheduled',
+        fitcheck_ac TEXT,
+        first_production_po_delivery_date TEXT,
+        overlap_days TEXT,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+    )
     """)
+
     conn.commit()
     conn.close()
 
-# ------------------ Project Functions ------------------
-def add_project(name, df):
+# ---- Project Management ----
+def add_project(name):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
-    pid = cur.lastrowid
-    cur.execute("INSERT INTO project_data (project_id, data) VALUES (?, ?)",
-                (pid, df.to_json(orient="records")))
     conn.commit()
+    pid = cur.lastrowid
     conn.close()
+    return pid
 
 def get_projects():
     conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM projects ORDER BY id DESC")
-    rows = cur.fetchall()
+    df = pd.read_sql_query("SELECT id, name FROM projects", conn)
     conn.close()
-    return rows
+    return df
 
 def update_project_name(pid, new_name):
     conn = sqlite3.connect(DB_FILE)
@@ -54,94 +66,59 @@ def update_project_name(pid, new_name):
     conn.commit()
     conn.close()
 
-# ------------------ Data Functions ------------------
-def get_project_data(project_id):
+# ---- Project Data ----
+def add_project_data(pid, df, replace=False):
     conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("SELECT data FROM project_data WHERE project_id=?", (project_id,))
-    row = cur.fetchone()
+    if replace:
+        conn.execute("DELETE FROM project_data WHERE project_id=?", (pid,))
+    df["project_id"] = pid
+    df.to_sql("project_data", conn, if_exists="append", index=False)
     conn.close()
 
-    if not row or not row[0]:
-        return pd.DataFrame()
+def get_project_data(pid):
+    conn = sqlite3.connect(DB_FILE)
+    query = """
+    SELECT stockcode, description, ac_coverage,
+           current_production_lt, current_price, next_shortage_date,
+           fai_lt, new_supplier_production_lt, new_price,
+           fai_delivery_date, fai_status, fitcheck_status,
+           fitcheck_ac, first_production_po_delivery_date, overlap_days
+    FROM project_data WHERE project_id=?
+    """
+    df = pd.read_sql_query(query, conn, params=(pid,))
+    conn.close()
 
-    # Convert JSON back into DataFrame
-    df = pd.DataFrame(json.loads(row[0]))
-
-    # Ensure schema consistency (auto-migration)
-    df = ensure_all_columns(df)
+    # --- Auto-calc Overlap (Days) ---
+    if not df.empty:
+        if "next_shortage_date" in df and "first_production_po_delivery_date" in df:
+            df["overlap_days"] = pd.to_datetime(df["next_shortage_date"], errors="coerce") - \
+                                 pd.to_datetime(df["first_production_po_delivery_date"], errors="coerce")
+            df["overlap_days"] = df["overlap_days"].dt.days
 
     return df
 
-def save_project_data(project_id, df):
-    # Ensure schema consistency before saving
-    df = ensure_all_columns(df)
+# ---- File Upload ----
+def detect_header_and_read(uploaded_file):
+    df = pd.read_excel(uploaded_file)
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
 
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("UPDATE project_data SET data=? WHERE project_id=?",
-                (df.to_json(orient="records"), project_id))
-    conn.commit()
-    conn.close()
-
-# ------------------ Utility ------------------
-def try_float(x):
-    try:
-        return float(x)
-    except:
-        return None
-
-def detect_header_and_read(file):
-    """Reads Excel file, maps headers to unified schema, returns normalized DataFrame"""
-    df = pd.read_excel(file)
-
-    # Normalize headers
-    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-
-    # Rename known headers to internal schema
-    header_map = {
+    col_map = {
         "stockcode": "stockcode",
         "description": "description",
-        "ac_coverage_(confirmed_pos)": "ac_coverage",
         "ac_coverage": "ac_coverage",
         "production_lt": "current_production_lt",
         "price": "current_price",
+        "next_shortage_date": "next_shortage_date",
         "fai_lt": "fai_lt",
-        "new_supplier_production_lt": "new_supplier_production_lt",
-        "new_price": "new_price",
-    }
-    df = df.rename(columns=header_map)
-
-    # Ensure schema compliance
-    df = ensure_all_columns(df)
-
-    return df
-
-def ensure_all_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensures that all required + workflow columns exist with defaults"""
-    required = [
-        "stockcode", "description", "ac_coverage",
-        "current_production_lt", "current_price",
-        "fai_lt", "new_supplier_production_lt", "new_price"
-    ]
-    workflow_cols = {
-        "next_shortage_date": "",
-        "fai_delivery_date": "",
-        "fai_status": "Not Submitted",
-        "fitcheck_status": "Not Scheduled",
-        "fitcheck_ac": "",
-        "first_production_po_delivery_date": "",
-        "overlap_days": ""
+        "production_lt.1": "new_supplier_production_lt",
+        "price.1": "new_price",
+        "fai_delivery_date": "fai_delivery_date",
+        "fai_status": "fai_status",
+        "fitcheck_status": "fitcheck_status",
+        "fitcheck_a/c": "fitcheck_ac",
+        "1st_production_po_delivery_date": "first_production_po_delivery_date",
+        "overlap_(days)": "overlap_days"
     }
 
-    # Add required columns if missing
-    for col in required:
-        if col not in df.columns:
-            df[col] = ""
-
-    # Add workflow columns with defaults
-    for col, default in workflow_cols.items():
-        if col not in df.columns:
-            df[col] = default
-
+    df = df.rename(columns={c: col_map[c] for c in df.columns if c in col_map})
     return df
