@@ -1,14 +1,13 @@
 import sqlite3
 import pandas as pd
-import streamlit as st  # for error reporting in get_project_data
 
 DB_FILE = "projects.db"
 
-# ------------------ DB Connection ------------------ #
+
 def get_connection():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
-# ------------------ Initialize DB ------------------ #
+
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
@@ -35,14 +34,13 @@ def init_db():
     # Procurement table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS procurement (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
             current_supplier TEXT,
             price REAL,
             ac_coverage TEXT,
-            production_lt INTEGER,
+            production_lt TEXT,
             next_shortage_date TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id)
         )
@@ -51,14 +49,13 @@ def init_db():
     # Industrialization table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS industrialization (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
             new_supplier TEXT,
             price REAL,
-            fai_lt INTEGER,
-            production_lt INTEGER,
+            fai_lt TEXT,
+            production_lt TEXT,
             fai_delivery_date TEXT,
             first_po_delivery_date TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -68,7 +65,6 @@ def init_db():
     # Quality table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quality (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
@@ -84,13 +80,17 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ------------------ Add Project ------------------ #
+
 def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
-    pid = None
-    try:
-        name = name.strip()
+
+    # Check if exists
+    cur.execute("SELECT id FROM projects WHERE name = ?", (name,))
+    row = cur.fetchone()
+    if row:
+        pid = row[0]
+    else:
         cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
         pid = cur.lastrowid
 
@@ -102,54 +102,58 @@ def add_project(name, stockcodes_df=None):
                     VALUES (?, ?, ?)
                 """, (pid, row["StockCode"], row["Description"]))
 
-        conn.commit()
-    except sqlite3.IntegrityError:
-        # Project already exists
-        pid = None
-    finally:
-        conn.close()
-
+    conn.commit()
+    conn.close()
     return pid
 
-# ------------------ Get Projects ------------------ #
+
 def get_projects():
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, name FROM projects")
-    rows = cur.fetchall()
+    df = pd.read_sql_query("SELECT id, name FROM projects ORDER BY id DESC", conn)
     conn.close()
-    return rows
+    return df
 
-# ------------------ Get Project Data ------------------ #
+
+def clear_table(project_id, table_name):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM {table_name} WHERE project_id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+def save_table(df, project_id, table_name):
+    conn = get_connection()
+    df["project_id"] = project_id
+    df.to_sql(table_name, conn, if_exists="append", index=False)
+    conn.close()
+
+
 def get_project_data(project_id):
     conn = get_connection()
-    
     query = """
         SELECT 
-            sl.stockcode AS StockCode,
-            sl.description AS Description,
+            sl.stockcode,
+            sl.description,
 
-            -- Procurement
-            pr.current_supplier AS CurrentSupplier,
-            pr.price AS CurrentPrice,
-            pr.ac_coverage AS ACCoverage,
-            pr.production_lt AS ProductionLT,
-            pr.next_shortage_date AS NextShortageDate,
+            pr.current_supplier,
+            pr.price AS proc_price,
+            pr.ac_coverage,
+            pr.production_lt AS proc_production_lt,
+            pr.next_shortage_date,
 
-            -- Industrialization
-            ind.new_supplier AS NewSupplier,
-            ind.price AS NewPrice,
-            ind.fai_lt AS FAI_LT,
-            ind.production_lt AS IndProductionLT,
-            ind.fai_delivery_date AS FAIDeliveryDate,
-            ind.first_po_delivery_date AS FirstPODeliveryDate,
+            ind.new_supplier,
+            ind.price AS ind_price,
+            ind.fai_lt,
+            ind.production_lt AS ind_production_lt,
+            ind.fai_delivery_date,
+            ind.first_po_delivery_date,
 
-            -- Quality
-            q.fai_status AS FAI_Status,
-            q.fai_number AS FAI_Number,
-            q.fitcheck_ac AS FitcheckAC,
-            q.fitcheck_date AS FitcheckDate,
-            q.fitcheck_status AS FitcheckStatus
+            q.fai_status,
+            q.fai_number,
+            q.fitcheck_ac,
+            q.fitcheck_date,
+            q.fitcheck_status
 
         FROM stock_list sl
         LEFT JOIN procurement pr 
@@ -160,21 +164,13 @@ def get_project_data(project_id):
             ON sl.project_id = q.project_id AND sl.stockcode = q.stockcode
         WHERE sl.project_id = ?
     """
+    df = pd.read_sql_query(query, conn, params=(project_id,))
+    conn.close()
 
-    try:
-        df = pd.read_sql_query(query, conn, params=(project_id,))
-        
-        # Add Overlap column
-        if not df.empty:
-            df["OverlapDays"] = (
-                pd.to_datetime(df["NextShortageDate"], errors="coerce")
-                - pd.to_datetime(df["FirstPODeliveryDate"], errors="coerce")
-            ).dt.days
-
-    except Exception as e:
-        st.error(f"Error fetching project data: {e}")
-        df = pd.DataFrame()
-    finally:
-        conn.close()
+    if not df.empty:
+        df["overlap_days"] = (
+            pd.to_datetime(df["next_shortage_date"], errors="coerce")
+            - pd.to_datetime(df["first_po_delivery_date"], errors="coerce")
+        ).dt.days
 
     return df
