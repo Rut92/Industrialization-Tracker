@@ -1,9 +1,10 @@
 import sqlite3
 import pandas as pd
+import json
 
 DB_FILE = "projects.db"
 
-# ------------------ DB Init ------------------
+# ------------------ Init ------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
@@ -12,158 +13,135 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
+            name TEXT UNIQUE
         )
     """)
 
-    # Project data table with all columns
+    # Data table (stores JSON string)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS project_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER,
-            stockcode TEXT,
-            description TEXT,
-            ac_coverage TEXT,
-            current_production_lt TEXT,
-            current_price REAL,
-            next_shortage_date TEXT,
-            fai_lt TEXT,
-            new_supplier_production_lt TEXT,
-            new_price REAL,
-            fai_delivery_date TEXT,
-            fai_status TEXT DEFAULT 'Not Submitted',
-            fitcheck_status TEXT DEFAULT 'Not Scheduled',
-            fitcheck_ac TEXT,
-            first_production_po_delivery_date TEXT,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
+            data TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
         )
     """)
     conn.commit()
     conn.close()
 
-
-# ------------------ Utilities ------------------
-def try_float(x):
-    if x is None:
-        return None
-    x = str(x).strip()
-    if x == "":
-        return None
-    x = x.replace("$", "").replace(",", "")
-    try:
-        return float(x)
-    except:
-        return None
-
-
-# ------------------ Project CRUD ------------------
+# ------------------ Project Functions ------------------
 def add_project(name, df):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
-    project_id = cur.lastrowid
-
-    for _, row in df.iterrows():
-        cur.execute("""
-            INSERT INTO project_data (
-                project_id, stockcode, description, ac_coverage,
-                current_production_lt, current_price, next_shortage_date,
-                fai_lt, new_supplier_production_lt, new_price,
-                fai_delivery_date, fai_status, fitcheck_status,
-                fitcheck_ac, first_production_po_delivery_date
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            project_id,
-            row.get("stockcode"),
-            row.get("description"),
-            row.get("ac_coverage"),
-            row.get("current_production_lt"),
-            try_float(row.get("current_price")),
-            row.get("next_shortage_date"),
-            row.get("fai_lt"),
-            row.get("new_supplier_production_lt"),
-            try_float(row.get("new_price")),
-            row.get("fai_delivery_date"),
-            row.get("fai_status", "Not Submitted"),
-            row.get("fitcheck_status", "Not Scheduled"),
-            row.get("fitcheck_ac"),
-            row.get("first_production_po_delivery_date"),
-        ))
-
+    pid = cur.lastrowid
+    cur.execute("INSERT INTO project_data (project_id, data) VALUES (?, ?)",
+                (pid, df.to_json(orient="records")))
     conn.commit()
     conn.close()
-
 
 def get_projects():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("SELECT id, name FROM projects ORDER BY id DESC")
-    projects = cur.fetchall()
+    rows = cur.fetchall()
     conn.close()
-    return projects
+    return rows
 
-
-def update_project_name(project_id, new_name):
+def update_project_name(pid, new_name):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute("UPDATE projects SET name = ? WHERE id = ?", (new_name, project_id))
+    cur.execute("UPDATE projects SET name=? WHERE id=?", (new_name, pid))
     conn.commit()
     conn.close()
 
-
+# ------------------ Data Functions ------------------
 def get_project_data(project_id):
     conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("""
-        SELECT stockcode, description, ac_coverage,
-               current_production_lt, current_price, next_shortage_date,
-               fai_lt, new_supplier_production_lt, new_price,
-               fai_delivery_date, fai_status, fitcheck_status,
-               fitcheck_ac, first_production_po_delivery_date
-        FROM project_data
-        WHERE project_id = ?
-    """, conn, params=(project_id,))
+    cur = conn.cursor()
+    cur.execute("SELECT data FROM project_data WHERE project_id=?", (project_id,))
+    row = cur.fetchone()
     conn.close()
+
+    if not row or not row[0]:
+        return pd.DataFrame()
+
+    # Convert JSON back into DataFrame
+    df = pd.DataFrame(json.loads(row[0]))
+
+    # Ensure schema consistency (auto-migration)
+    df = ensure_all_columns(df)
+
     return df
 
-
 def save_project_data(project_id, df):
+    # Ensure schema consistency before saving
+    df = ensure_all_columns(df)
+
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute("DELETE FROM project_data WHERE project_id = ?", (project_id,))
-    for _, row in df.iterrows():
-        cur.execute("""
-            INSERT INTO project_data (
-                project_id, stockcode, description, ac_coverage,
-                current_production_lt, current_price, next_shortage_date,
-                fai_lt, new_supplier_production_lt, new_price,
-                fai_delivery_date, fai_status, fitcheck_status,
-                fitcheck_ac, first_production_po_delivery_date
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            project_id,
-            row.get("stockcode"),
-            row.get("description"),
-            row.get("ac_coverage"),
-            row.get("current_production_lt"),
-            try_float(row.get("current_price")),
-            row.get("next_shortage_date"),
-            row.get("fai_lt"),
-            row.get("new_supplier_production_lt"),
-            try_float(row.get("new_price")),
-            row.get("fai_delivery_date"),
-            row.get("fai_status", "Not Submitted"),
-            row.get("fitcheck_status", "Not Scheduled"),
-            row.get("fitcheck_ac"),
-            row.get("first_production_po_delivery_date"),
-        ))
+    cur.execute("UPDATE project_data SET data=? WHERE project_id=?",
+                (df.to_json(orient="records"), project_id))
     conn.commit()
     conn.close()
 
+# ------------------ Utility ------------------
+def try_float(x):
+    try:
+        return float(x)
+    except:
+        return None
 
-# ------------------ File Utilities ------------------
-def detect_header_and_read(uploaded_file):
-    """Simple reader assuming first row is header."""
-    df = pd.read_excel(uploaded_file, dtype=str)
+def detect_header_and_read(file):
+    """Reads Excel file, maps headers to unified schema, returns normalized DataFrame"""
+    df = pd.read_excel(file)
+
+    # Normalize headers
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+    # Rename known headers to internal schema
+    header_map = {
+        "stockcode": "stockcode",
+        "description": "description",
+        "ac_coverage_(confirmed_pos)": "ac_coverage",
+        "ac_coverage": "ac_coverage",
+        "production_lt": "current_production_lt",
+        "price": "current_price",
+        "fai_lt": "fai_lt",
+        "new_supplier_production_lt": "new_supplier_production_lt",
+        "new_price": "new_price",
+    }
+    df = df.rename(columns=header_map)
+
+    # Ensure schema compliance
+    df = ensure_all_columns(df)
+
+    return df
+
+def ensure_all_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensures that all required + workflow columns exist with defaults"""
+    required = [
+        "stockcode", "description", "ac_coverage",
+        "current_production_lt", "current_price",
+        "fai_lt", "new_supplier_production_lt", "new_price"
+    ]
+    workflow_cols = {
+        "next_shortage_date": "",
+        "fai_delivery_date": "",
+        "fai_status": "Not Submitted",
+        "fitcheck_status": "Not Scheduled",
+        "fitcheck_ac": "",
+        "first_production_po_delivery_date": "",
+        "overlap_days": ""
+    }
+
+    # Add required columns if missing
+    for col in required:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Add workflow columns with defaults
+    for col, default in workflow_cols.items():
+        if col not in df.columns:
+            df[col] = default
+
     return df
