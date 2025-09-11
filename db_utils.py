@@ -35,7 +35,7 @@ def init_db():
         fitcheck_status TEXT DEFAULT 'Not Scheduled',
         fitcheck_ac TEXT,
         first_production_po_delivery_date TEXT,
-        overlap_days TEXT,
+        overlap_days INTEGER,
         FOREIGN KEY(project_id) REFERENCES projects(id)
     )
     """)
@@ -71,6 +71,7 @@ def add_project_data(pid, df, replace=False):
     conn = sqlite3.connect(DB_FILE)
     if replace:
         conn.execute("DELETE FROM project_data WHERE project_id=?", (pid,))
+    df = df.copy()
     df["project_id"] = pid
     df.to_sql("project_data", conn, if_exists="append", index=False)
     conn.close()
