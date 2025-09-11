@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from db_utils import get_project_data, save_project_data, try_float
+from db_utils import get_project_data
 
 st.set_page_config(page_title="Project Data", layout="wide")
 st.title("📋 Project Data Table")
@@ -16,32 +16,53 @@ df = get_project_data(project_id)
 if df.empty:
     st.info("No rows found for this project.")
 else:
-    display_df = df.copy()
-    display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
-    display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
+    # Format prices
+    if "proc_price" in df.columns:
+        df["proc_price"] = df["proc_price"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    if "ind_price" in df.columns:
+        df["ind_price"] = df["ind_price"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
 
+    # MultiIndex headers
     tuples = [
         ("General", "StockCode"),
         ("General", "Description"),
-        ("Current Supplier", "AC Coverage (POs)"),
-        ("Current Supplier", "Production LT"),
-        ("Current Supplier", "Price"),
-        ("New Supplier", "FAI LT"),
-        ("New Supplier", "Production LT"),
-        ("New Supplier", "Price"),
+
+        ("Procurement", "Current Supplier"),
+        ("Procurement", "Price"),
+        ("Procurement", "AC Coverage"),
+        ("Procurement", "Production LT"),
+        ("Procurement", "Next Shortage Date"),
+
+        ("Industrialization", "New Supplier"),
+        ("Industrialization", "Price"),
+        ("Industrialization", "FAI LT"),
+        ("Industrialization", "Production LT"),
+        ("Industrialization", "FAI Delivery Date"),
+        ("Industrialization", "1st Production PO Delivery Date"),
+        ("Industrialization", "Overlap Days"),
+
+        ("Quality", "FAI Status"),
+        ("Quality", "FAI Number"),
+        ("Quality", "Fitcheck AC"),
+        ("Quality", "Fitcheck Date"),
+        ("Quality", "Fitcheck Status"),
     ]
-    display_df.columns = pd.MultiIndex.from_tuples(tuples)
-    st.dataframe(display_df, width="stretch")
+    df.columns = pd.MultiIndex.from_tuples(tuples)
 
-    st.subheader("Edit Table Values")
-    edited = st.data_editor(df, num_rows="dynamic")
+    # Display summary table
+    st.dataframe(df, width="stretch")
 
-    if st.button("Save edits"):
-        save_project_data(project_id, edited)
-        st.success("Saved changes.")
+    # Totals
+    if "Procurement" in df.columns.get_level_values(0):
+        total_old = pd.to_numeric(df[("Procurement", "Price")].str.replace("$", "").str.replace(",", ""), errors="coerce").sum()
+    else:
+        total_old = 0
 
-    total_old = edited["current_price"].sum()
-    total_new = edited["new_price"].sum()
-    st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
-    st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
+    if "Industrialization" in df.columns.get_level_values(0):
+        total_new = pd.to_numeric(df[("Industrialization", "Price")].str.replace("$", "").str.replace(",", ""), errors="coerce").sum()
+    else:
+        total_new = 0
+
+    st.metric("Total Procurement Cost", f"${total_old:,.2f}")
+    st.metric("Total Industrialization Cost", f"${total_new:,.2f}")
     st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
