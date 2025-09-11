@@ -89,12 +89,11 @@ def get_project_data(pid):
     df = pd.read_sql_query(query, conn, params=(pid,))
     conn.close()
 
-    # --- Auto-calc Overlap (Days) ---
-    if not df.empty:
-        if "next_shortage_date" in df and "first_production_po_delivery_date" in df:
-            df["overlap_days"] = pd.to_datetime(df["next_shortage_date"], errors="coerce") - \
-                                 pd.to_datetime(df["first_production_po_delivery_date"], errors="coerce")
-            df["overlap_days"] = df["overlap_days"].dt.days
+    # Auto-calc overlap_days
+    if not df.empty and "next_shortage_date" in df and "first_production_po_delivery_date" in df:
+        df["overlap_days"] = pd.to_datetime(df["next_shortage_date"], errors="coerce") - \
+                             pd.to_datetime(df["first_production_po_delivery_date"], errors="coerce")
+        df["overlap_days"] = df["overlap_days"].dt.days
 
     return df
 
