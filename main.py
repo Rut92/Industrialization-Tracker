@@ -76,30 +76,54 @@ else:
     # Tabs: Final Table / Editable Table
     tab1, tab2 = st.tabs(["Final Table", "Edit Table"])
 
-    # ------------------ Tab 1: Final Table ------------------
+    # ------------------ Tab 1: Final Table (read-only, no index shown) ------------------
     with tab1:
         st.header(f"Project: {selected} - Final Table")
         df_final = get_project_data(pid)
         if df_final.empty:
             st.info("No rows found for this project.")
         else:
-            # Reset index to remove default Pandas index
-            df_final = df_final.reset_index(drop=True)
+            # Copy and format for presentation (do not change original df)
+            display_df = df_final.copy()
 
-            # Serial numbers starting from 1
-            df_final.insert(0, "S.No", range(1, len(df_final) + 1))
+            # Format price columns for display (strings with $)
+            if "current_price" in display_df.columns:
+                display_df["current_price"] = display_df["current_price"].apply(lambda x: f"${x:,.2f}")
+            if "new_price" in display_df.columns:
+                display_df["new_price"] = display_df["new_price"].apply(lambda x: f"${x:,.2f}")
 
-            # Display table
-            st.dataframe(df_final, width="stretch")
+            # Use Styler to hide the index column so Streamlit doesn't render it
+            try:
+                styled = display_df.style.hide_index()
+                st.dataframe(styled, width="stretch")
+            except Exception:
+                # Fallback if hide_index() not available: reset_index and drop it, then render
+                display_df = display_df.reset_index(drop=True)
+                st.dataframe(display_df, width="stretch")
 
-    # ------------------ Tab 2: Editable Table ------------------
+            # Totals (use numeric df_final for sums)
+            try:
+                total_old = df_final["current_price"].sum()
+                total_new = df_final["new_price"].sum()
+                st.metric("Total Current Supplier Cost", f"${total_old:,.2f}")
+                st.metric("Total New Supplier Cost", f"${total_new:,.2f}")
+                st.metric("Estimated Savings", f"${(total_old - total_new):,.2f}")
+            except Exception:
+                # If numeric columns missing or malformed, skip totals gracefully
+                pass
+
+    # ------------------ Tab 2: Editable Table (no index shown) ------------------
     with tab2:
         st.header(f"Project: {selected} - Editable Table")
         df_edit = get_project_data(pid)
         if df_edit.empty:
             st.info("No rows found for this project.")
         else:
-            edited = st.data_editor(df_edit, num_rows="dynamic")
+            # Reset index so the data editor does not show the index column
+            df_edit_no_index = df_edit.reset_index(drop=True)
+            edited = st.data_editor(df_edit_no_index, num_rows="dynamic")
+
             if st.button("Save edits", key="save_edits"):
+                # Save back to DB
                 save_project_data(pid, edited)
                 st.success("Saved changes.")
