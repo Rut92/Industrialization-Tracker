@@ -1,11 +1,15 @@
 import sqlite3
 import pandas as pd
-import os
 
 DB_FILE = "projects.db"
 
+
+def get_connection():
+    return sqlite3.connect(DB_FILE, check_same_thread=False)
+
+
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_connection()
     cur = conn.cursor()
 
     # Projects table
@@ -16,17 +20,28 @@ def init_db():
         )
     """)
 
+    # Master stock list (common to all tabs)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock_list (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            stockcode TEXT,
+            description TEXT,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+    """)
+
     # Procurement table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS procurement (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER,
+            project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
             current_supplier TEXT,
             price REAL,
             ac_coverage TEXT,
-            production_lt TEXT,
+            production_lt INTEGER,
             next_shortage_date TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id)
         )
@@ -36,15 +51,15 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS industrialization (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER,
+            project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
             new_supplier TEXT,
             price REAL,
-            fai_lt TEXT,
-            production_lt TEXT,
+            fai_lt INTEGER,
+            production_lt INTEGER,
             fai_delivery_date TEXT,
-            first_prod_po_date TEXT,
+            first_po_delivery_date TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id)
         )
     """)
@@ -53,14 +68,14 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quality (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER,
+            project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
-            fair_status TEXT,
-            fair_number TEXT,
+            fai_status TEXT DEFAULT 'Not Submitted',
+            fai_number TEXT,
             fitcheck_ac TEXT,
             fitcheck_date TEXT,
-            fitcheck_status TEXT,
+            fitcheck_status TEXT DEFAULT 'Not Scheduled',
             FOREIGN KEY(project_id) REFERENCES projects(id)
         )
     """)
@@ -69,16 +84,29 @@ def init_db():
     conn.close()
 
 
-def get_connection():
-    return sqlite3.connect(DB_FILE)
-
-
-def add_project(name):
+def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO projects (name) VALUES (?)", (name,))
-    conn.commit()
-    conn.close()
+    try:
+        cur.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+        pid = cur.lastrowid
+
+        # Save stock list if provided
+        if stockcodes_df is not None:
+            for _, row in stockcodes_df.iterrows():
+                cur.execute("""
+                    INSERT INTO stock_list (project_id, stockcode, description)
+                    VALUES (?, ?, ?)
+                """, (pid, row["StockCode"], row["Description"]))
+
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Project already exists
+        pid = None
+    finally:
+        conn.close()
+
+    return pid
 
 
 def get_projects():
@@ -90,55 +118,52 @@ def get_projects():
     return rows
 
 
-def save_table(df, project_id, table_name):
-    conn = get_connection()
-    df["project_id"] = project_id
-    df.to_sql(table_name, conn, if_exists="append", index=False)
-    conn.close()
-
-
-def clear_table(project_id, table_name):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(f"DELETE FROM {table_name} WHERE project_id = ?", (project_id,))
-    conn.commit()
-    conn.close()
-
-
 def get_project_data(project_id):
     conn = get_connection()
+    query = """
+        SELECT 
+            sl.stockcode AS [A]StockCode,
+            sl.description AS [B]Description,
 
-    def safe_query(query, params):
-        try:
-            return pd.read_sql_query(query, conn, params=params)
-        except Exception:
-            return pd.DataFrame()
+            -- Procurement
+            pr.current_supplier AS [C]CurrentSupplier,
+            pr.price AS [D]Price,
+            pr.ac_coverage AS [E]AC_Coverage,
+            pr.production_lt AS [F]Production_LT,
+            pr.next_shortage_date AS [G]Next_Shortage_Date,
 
-    # Procurement
-    df_proc = safe_query("SELECT * FROM procurement WHERE project_id = ?", (project_id,))
-    # Industrialization
-    df_ind = safe_query("SELECT * FROM industrialization WHERE project_id = ?", (project_id,))
-    # Quality
-    df_qual = safe_query("SELECT * FROM quality WHERE project_id = ?", (project_id,))
+            -- Industrialization
+            ind.new_supplier AS [H]NewSupplier,
+            ind.price AS [I]Price,
+            ind.fai_lt AS [J]FAI_LT,
+            ind.production_lt AS [K]Production_LT,
+            ind.fai_delivery_date AS [L]FAI_Delivery_Date,
+            ind.first_po_delivery_date AS [M]First_PO_Delivery_Date,
 
+            -- Quality
+            q.fai_status AS [N]FAI_Status,
+            q.fai_number AS [O]FAI_Number,
+            q.fitcheck_ac AS [P]Fitcheck_AC,
+            q.fitcheck_date AS [Q]Fitcheck_Date,
+            q.fitcheck_status AS [R]Fitcheck_Status
+
+        FROM stock_list sl
+        LEFT JOIN procurement pr 
+            ON sl.project_id = pr.project_id AND sl.stockcode = pr.stockcode
+        LEFT JOIN industrialization ind 
+            ON sl.project_id = ind.project_id AND sl.stockcode = ind.stockcode
+        LEFT JOIN quality q 
+            ON sl.project_id = q.project_id AND sl.stockcode = q.stockcode
+        WHERE sl.project_id = ?
+    """
+    df = pd.read_sql_query(query, conn, params=(project_id,))
     conn.close()
 
-    if df_proc.empty and df_ind.empty and df_qual.empty:
-        return pd.DataFrame()
-
-    for df in [df_proc, df_ind, df_qual]:
-        if not df.empty and "project_id" not in df.columns:
-            df["project_id"] = project_id
-
-    # Merge
-    df = pd.merge(df_proc, df_ind, on=["stockcode", "description", "project_id"], how="outer", suffixes=("_proc", "_ind"))
-    df = pd.merge(df, df_qual, on=["stockcode", "description", "project_id"], how="outer")
-
-    # Calculate Overlap (Days)
-    if "next_shortage_date" in df.columns and "first_prod_po_date" in df.columns:
-        df["Overlap (Days)"] = (
-            pd.to_datetime(df["next_shortage_date"], errors="coerce")
-            - pd.to_datetime(df["first_prod_po_date"], errors="coerce")
+    # Add Overlap column
+    if not df.empty:
+        df["[S]Overlap_Days"] = (
+            pd.to_datetime(df["[G]Next_Shortage_Date"], errors="coerce")
+            - pd.to_datetime(df["[M]First_PO_Delivery_Date"], errors="coerce")
         ).dt.days
 
     return df
