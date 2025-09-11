@@ -3,11 +3,16 @@ import pandas as pd
 import io
 from db_utils import (
     init_db, add_project, get_projects,
-    update_project_name, get_project_data,
-    save_project_data, detect_header_and_read
+    update_project_name, get_project_data, save_project_data,
+    detect_header_and_read
 )
 
-# ------------------ Template Generator ------------------
+# ------------------ Init ------------------
+init_db()
+
+st.set_page_config(page_title="Industrialization Tracker", layout="wide")
+
+# ------------------ Helper: Excel Template ------------------
 def make_template_bytes():
     headers = [
         "[A] StockCode", "[B] Description", "[C] AC Coverage",
@@ -16,14 +21,12 @@ def make_template_bytes():
         "[J] FAI Delivery Date", "[K] FAI Status", "[L] Fitcheck Status",
         "[M] Fitcheck A/C", "[N] 1st Production PO Delivery Date", "[O] Overlap (Days)"
     ]
-
     example = [[
         "ABC123", "Widget", "180",
-        "60", 150, "",   # Current supplier data
-        "90", "55", 120, # New supplier data
+        "60", 150, "",
+        "90", "55", 120,
         "", "Not Submitted", "Not Scheduled", "", "", ""
     ]]
-
     df = pd.DataFrame(example, columns=headers)
 
     towrite = io.BytesIO()
@@ -32,133 +35,112 @@ def make_template_bytes():
     towrite.seek(0)
     return towrite
 
+# ------------------ Sidebar ------------------
+with st.sidebar:
+    st.header("📂 Project Management")
 
-# ------------------ Main App ------------------
-st.set_page_config(page_title="📊 Industrialization Tracker", layout="wide")
-init_db()
+    # Create new project
+    new_name = st.text_input("New Project Name")
+    uploaded_file = st.file_uploader("Upload Initial Excel", type=["xlsx"])
+    if st.button("Create Project") and new_name and uploaded_file:
+        df = detect_header_and_read(uploaded_file)
+        add_project(new_name, df)
+        st.success(f"Project '{new_name}' created!")
 
-st.title("📊 Industrialization Tracker")
-
-# Sidebar
-st.sidebar.header("Project Management")
-projects = get_projects()
-project_names = [p[1] for p in projects]
-
-selected = st.sidebar.selectbox("Select Project", ["-- New Project --"] + project_names)
-
-if selected == "-- New Project --":
-    new_name = st.sidebar.text_input("New Project Name")
-    uploaded = st.sidebar.file_uploader("Upload Excel Template", type=["xlsx"])
-    st.sidebar.download_button(
-        "Download Template Excel",
+    # Download template
+    st.download_button(
+        label="📥 Download Template Excel",
         data=make_template_bytes(),
-        file_name="ind_tracker_template.xlsx",
+        file_name="industrialization_template.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    if uploaded and new_name:
-        df = detect_header_and_read(uploaded)
-        add_project(new_name, df)
-        st.sidebar.success(f"Project '{new_name}' created. Reload the page.")
-        st.stop()
 
-else:
-    pid = [p[0] for p in projects if p[1] == selected][0]
-    tab1, tab2 = st.tabs(["📑 Final Table", "✏️ Edit Data"])
+    # Select project
+    projects = get_projects()
+    pid = None
+    selected = None
+    if projects:
+        project_options = {name: pid for pid, name in projects}
+        selected = st.selectbox("Select Project", list(project_options.keys()))
+        pid = project_options[selected]
 
-    # -------- Tab 1: Final Table --------
+# ------------------ Main Tabs ------------------
+if pid:
+    tab1, tab2 = st.tabs(["📊 Final Table", "✏️ Edit Data"])
+
+    # ---- Tab 1: Final Table ----
     with tab1:
         st.header(f"Project: {selected} - Final Table")
         df_final = get_project_data(pid)
-
         if df_final.empty:
             st.info("No rows found for this project.")
         else:
-            # Supplier names
-            current_supplier = st.session_state.get("current_supplier", "Current Supplier")
-            new_supplier = st.session_state.get("new_supplier", "New Supplier")
+            # Rename columns with alphabet prefixes
+            col_map = {
+                "stockcode": "[A] StockCode",
+                "description": "[B] Description",
+                "ac_coverage": "[C] AC Coverage",
+                "current_production_lt": "[D] Current Production LT",
+                "current_price": "[E] Current Price",
+                "next_shortage_date": "[F] Next Shortage Date",
+                "fai_lt": "[G] FAI LT",
+                "new_supplier_production_lt": "[H] New Supplier Production LT",
+                "new_price": "[I] New Price",
+                "fai_delivery_date": "[J] FAI Delivery Date",
+                "fai_status": "[K] FAI Status",
+                "fitcheck_status": "[L] Fitcheck Status",
+                "fitcheck_ac": "[M] Fitcheck A/C",
+                "first_production_po_delivery_date": "[N] 1st Production PO Delivery Date",
+                "overlap_days": "[O] Overlap (Days)"
+            }
+            df_display = df_final.rename(columns=col_map)
 
-            # Build display DF
-            df_display = pd.DataFrame()
-            df_display[("[A] Stockcode")] = df_final["stockcode"]
-            df_display[("[B] Description")] = df_final["description"]
-            df_display[("[C] AC Coverage")] = df_final["ac_coverage"]
-            df_display[("[D] Production LT")] = df_final["current_production_lt"]
-            df_display[("[E] Price")] = df_final["current_price"]
-            df_display[("[F] Next Shortage Date")] = df_final["next_shortage_date"]
-            df_display[("[G] FAI LT")] = df_final["fai_lt"]
-            df_display[("[H] Production LT")] = df_final["new_supplier_production_lt"]
-            df_display[("[I] Price")] = df_final["new_price"]
-            df_display[("[J] FAI Delivery Date")] = df_final["fai_delivery_date"]
-            df_display[("[K] FAI Status")] = df_final["fai_status"]
-            df_display[("[L] Fitcheck Status")] = df_final["fitcheck_status"]
-            df_display[("[M] Fitcheck A/C")] = df_final["fitcheck_ac"]
-            df_display[("[N] 1st Production PO Delivery Date")] = df_final["first_production_po_delivery_date"]
+            st.dataframe(df_display, use_container_width=True)
 
-            # Overlap calculation
-            overlap = []
-            for shortage, po_date in zip(df_final["next_shortage_date"], df_final["first_production_po_delivery_date"]):
-                try:
-                    if shortage and po_date:
-                        shortage_dt = pd.to_datetime(shortage)
-                        po_dt = pd.to_datetime(po_date)
-                        overlap.append((shortage_dt - po_dt).days)
-                    else:
-                        overlap.append("")
-                except Exception:
-                    overlap.append("")
-            df_display[("[O] Overlap (Days)")] = overlap
-
-            # MultiIndex headers
-            cols = [
-                ("General", "[A] Stockcode"),
-                ("General", "[B] Description"),
-                ("General", "[C] AC Coverage"),
-                (current_supplier, "[D] Production LT"),
-                (current_supplier, "[E] Price"),
-                (current_supplier, "[F] Next Shortage Date"),
-                (new_supplier, "[G] FAI LT"),
-                (new_supplier, "[H] Production LT"),
-                (new_supplier, "[I] Price"),
-                (new_supplier, "[J] FAI Delivery Date"),
-                (new_supplier, "[K] FAI Status"),
-                (new_supplier, "[L] Fitcheck Status"),
-                (new_supplier, "[M] Fitcheck A/C"),
-                (new_supplier, "[N] 1st Production PO Delivery Date"),
-                (new_supplier, "[O] Overlap (Days)"),
-            ]
-            df_display.columns = pd.MultiIndex.from_tuples(cols)
-
-            st.dataframe(df_display, width="stretch")
-
-    # -------- Tab 2: Editable Table --------
+    # ---- Tab 2: Edit Data ----
     with tab2:
         st.header(f"Project: {selected} - Edit Data")
 
         # Supplier names
-        st.subheader("Supplier Names")
-        current_supplier = st.text_input("Current Supplier Name", value=st.session_state.get("current_supplier", "Current Supplier"))
-        new_supplier = st.text_input("New Supplier Name", value=st.session_state.get("new_supplier", "New Supplier"))
-        st.session_state["current_supplier"] = current_supplier
-        st.session_state["new_supplier"] = new_supplier
+        col1, col2 = st.columns(2)
+        with col1:
+            current_supplier = st.text_input("Current Supplier Name", value="Current Supplier")
+        with col2:
+            new_supplier = st.text_input("New Supplier Name", value="New Supplier")
 
-        st.subheader("Edit Table")
+        df_edit = get_project_data(pid)
 
-        editable_cols = [
-            "next_shortage_date", "fai_delivery_date", "fai_status",
-            "fitcheck_status", "fitcheck_ac", "first_production_po_delivery_date"
-        ]
-
+        # Editable dataframe
         edited = st.data_editor(
-            df_final,
-            width="stretch",
-            hide_index=True,
+            df_edit,
             column_config={
-                "fai_status": st.column_config.SelectboxColumn("FAI Status", options=["Not Submitted", "Under Review", "Failed", "Passed"]),
-                "fitcheck_status": st.column_config.SelectboxColumn("Fitcheck Status", options=["Not Scheduled", "Scheduled", "Failed", "Passed"]),
+                "fai_status": st.column_config.SelectboxColumn(
+                    "FAI Status",
+                    options=["Not Submitted", "Under Review", "Failed", "Passed"],
+                    default="Not Submitted"
+                ),
+                "fitcheck_status": st.column_config.SelectboxColumn(
+                    "Fitcheck Status",
+                    options=["Not Scheduled", "Scheduled", "Failed", "Passed"],
+                    default="Not Scheduled"
+                ),
             },
-            disabled=[c for c in df_final.columns if c not in editable_cols],
+            num_rows="dynamic",
+            use_container_width=True
         )
+
+        # Calculate Overlap (Days)
+        if "next_shortage_date" in edited and "first_production_po_delivery_date" in edited:
+            try:
+                edited["overlap_days"] = pd.to_datetime(
+                    edited["next_shortage_date"], errors="coerce"
+                ) - pd.to_datetime(
+                    edited["first_production_po_delivery_date"], errors="coerce"
+                )
+                edited["overlap_days"] = edited["overlap_days"].dt.days
+            except Exception:
+                edited["overlap_days"] = ""
 
         if st.button("💾 Save Changes"):
             save_project_data(pid, edited)
-            st.success("Changes saved. Refresh Tab 1 to see updates.")
+            st.success("Project data saved successfully!")
