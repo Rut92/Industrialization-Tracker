@@ -1,5 +1,7 @@
+import re
 import sqlite3
 import pandas as pd
+from datetime import datetime
 
 DB_FILE = "projects.db"
 
@@ -12,7 +14,6 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
-    # Projects
     cur.execute("""
         CREATE TABLE IF NOT EXISTS projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,49 +21,43 @@ def init_db():
         )
     """)
 
-    # Stock list
     cur.execute("""
         CREATE TABLE IF NOT EXISTS stock_list (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            UNIQUE(project_id, stockcode)
         )
     """)
 
-    # Procurement
     cur.execute("""
         CREATE TABLE IF NOT EXISTS procurement (
             project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
             current_supplier TEXT,
-            price REAL,
             ac_coverage TEXT,
-            production_lt TEXT,
             next_shortage_date TEXT,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            UNIQUE(project_id, stockcode)
         )
     """)
 
-    # Industrialization
     cur.execute("""
         CREATE TABLE IF NOT EXISTS industrialization (
             project_id INTEGER NOT NULL,
             stockcode TEXT,
             description TEXT,
             new_supplier TEXT,
-            price REAL,
-            fai_lt TEXT,
-            production_lt TEXT,
             fai_delivery_date TEXT,
             first_po_delivery_date TEXT,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            UNIQUE(project_id, stockcode)
         )
     """)
 
-    # Quality
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quality (
             project_id INTEGER NOT NULL,
@@ -72,8 +67,9 @@ def init_db():
             fai_number TEXT,
             fitcheck_ac TEXT,
             fitcheck_date TEXT,
-            fitcheck_status TEXT DEFAULT 'Not Scheduled',
-            FOREIGN KEY(project_id) REFERENCES projects(id)
+            fitcheck_status TEXT DEFAULT '',
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            UNIQUE(project_id, stockcode)
         )
     """)
 
@@ -81,26 +77,49 @@ def init_db():
     conn.close()
 
 
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    col_map = {}
+    for col in df.columns:
+        norm = re.sub(r'[^a-z0-9]', '_', str(col).lower())
+        norm = re.sub(r'_+', '_', norm).strip('_')
+        col_map[col] = norm
+    return df.rename(columns=col_map)
+
+
+def try_date(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    try:
+        return datetime.strptime(str(x).strip(), "%Y-%m-%d").date().isoformat()
+    except Exception:
+        pass
+    try:
+        dt = pd.to_datetime(x, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return dt.date().isoformat()
+    except Exception:
+        return None
+
+
 def add_project(name, stockcodes_df=None):
     conn = get_connection()
     cur = conn.cursor()
-
-    # Insert or reuse existing
     cur.execute("INSERT OR IGNORE INTO projects (name) VALUES (?)", (name,))
     conn.commit()
 
-    # Get id
     cur.execute("SELECT id FROM projects WHERE name = ?", (name,))
     pid = cur.fetchone()[0]
 
-    # Save stock list if uploaded
     if stockcodes_df is not None:
-        cur.execute("DELETE FROM stock_list WHERE project_id = ?", (pid,))
+        stockcodes_df = normalize_columns(stockcodes_df)
         for _, row in stockcodes_df.iterrows():
-            cur.execute(
-                "INSERT INTO stock_list (project_id, stockcode, description) VALUES (?, ?, ?)",
-                (pid, row["StockCode"], row["Description"])
-            )
+            cur.execute("""
+                INSERT INTO stock_list (project_id, stockcode, description)
+                VALUES (?, ?, ?)
+                ON CONFLICT(project_id, stockcode) DO UPDATE SET
+                    description=excluded.description
+            """, (pid, row.get("stockcode"), row.get("description")))
     conn.commit()
     conn.close()
     return pid
@@ -113,18 +132,54 @@ def get_projects():
     return df
 
 
-def clear_table(project_id, table_name):
+def save_table(df, project_id, table_name):
+    """UPSERT table rows (no duplication)."""
+    df = normalize_columns(df)
+
+    schema = {
+        "procurement": ["stockcode", "description", "current_supplier", "ac_coverage", "next_shortage_date"],
+        "industrialization": ["stockcode", "description", "new_supplier", "fai_delivery_date", "first_po_delivery_date"],
+        "quality": ["stockcode", "description", "fai_status", "fai_number", "fitcheck_ac", "fitcheck_date", "fitcheck_status"],
+    }
+
+    if table_name not in schema:
+        raise ValueError(f"Unknown table {table_name}")
+
+    # restrict
+    for col in schema[table_name]:
+        if col not in df.columns:
+            df[col] = None
+    df = df[schema[table_name]]
+
+    # dedupe by stockcode
+    df = df.drop_duplicates(subset=["stockcode"], keep="last")
+
+    # clean dates
+    for col in ["next_shortage_date", "fai_delivery_date", "first_po_delivery_date", "fitcheck_date"]:
+        if col in df.columns:
+            df[col] = df[col].apply(try_date)
+
+    # defaults for quality
+    if table_name == "quality":
+        df["fai_status"] = df["fai_status"].fillna("Not Submitted")
+        df["fitcheck_status"] = df["fitcheck_status"].fillna("")
+
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"DELETE FROM {table_name} WHERE project_id = ?", (project_id,))
+
+    for _, row in df.iterrows():
+        placeholders = ", ".join("?" * (len(row) + 1))
+        columns = ", ".join(["project_id"] + list(df.columns))
+        updates = ", ".join([f"{c}=excluded.{c}" for c in df.columns if c not in ["stockcode"]])
+
+        sql = f"""
+            INSERT INTO {table_name} ({columns})
+            VALUES ({placeholders})
+            ON CONFLICT(project_id, stockcode) DO UPDATE SET {updates}
+        """
+        cur.execute(sql, (project_id,) + tuple(row))
+
     conn.commit()
-    conn.close()
-
-
-def save_table(df, project_id, table_name):
-    conn = get_connection()
-    df["project_id"] = project_id
-    df.to_sql(table_name, conn, if_exists="append", index=False)
     conn.close()
 
 
@@ -136,15 +191,10 @@ def get_project_data(project_id):
             sl.description,
 
             pr.current_supplier,
-            pr.price AS proc_price,
             pr.ac_coverage,
-            pr.production_lt AS proc_production_lt,
             pr.next_shortage_date,
 
             ind.new_supplier,
-            ind.price AS ind_price,
-            ind.fai_lt,
-            ind.production_lt AS ind_production_lt,
             ind.fai_delivery_date,
             ind.first_po_delivery_date,
 
@@ -166,10 +216,25 @@ def get_project_data(project_id):
     df = pd.read_sql_query(query, conn, params=(project_id,))
     conn.close()
 
-    if not df.empty:
-        df["overlap_days"] = (
-            pd.to_datetime(df["next_shortage_date"], errors="coerce")
-            - pd.to_datetime(df["first_po_delivery_date"], errors="coerce")
-        ).dt.days
+    if df.empty:
+        cols = [
+            "stockcode", "description",
+            "current_supplier", "ac_coverage", "next_shortage_date",
+            "new_supplier", "fai_delivery_date", "first_po_delivery_date", "overlap_days",
+            "fai_status", "fai_number", "fitcheck_ac", "fitcheck_date", "fitcheck_status"
+        ]
+        return pd.DataFrame(columns=cols)
 
-    return df
+    df["overlap_days"] = (
+        pd.to_datetime(df["next_shortage_date"], errors="coerce")
+        - pd.to_datetime(df["first_po_delivery_date"], errors="coerce")
+    ).dt.days
+
+    return df[
+        [
+            "stockcode", "description",
+            "current_supplier", "ac_coverage", "next_shortage_date",
+            "new_supplier", "fai_delivery_date", "first_po_delivery_date", "overlap_days",
+            "fai_status", "fai_number", "fitcheck_ac", "fitcheck_date", "fitcheck_status"
+        ]
+    ]
