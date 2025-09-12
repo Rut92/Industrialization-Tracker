@@ -32,6 +32,7 @@ def init_db():
         )
     """)
 
+    # procurement
     cur.execute("""
         CREATE TABLE IF NOT EXISTS procurement (
             project_id INTEGER NOT NULL,
@@ -44,7 +45,11 @@ def init_db():
             UNIQUE(project_id, stockcode)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS procurement_undo AS SELECT * FROM procurement WHERE 0;
+    """)
 
+    # industrialization
     cur.execute("""
         CREATE TABLE IF NOT EXISTS industrialization (
             project_id INTEGER NOT NULL,
@@ -57,7 +62,11 @@ def init_db():
             UNIQUE(project_id, stockcode)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS industrialization_undo AS SELECT * FROM industrialization WHERE 0;
+    """)
 
+    # quality
     cur.execute("""
         CREATE TABLE IF NOT EXISTS quality (
             project_id INTEGER NOT NULL,
@@ -72,9 +81,30 @@ def init_db():
             UNIQUE(project_id, stockcode)
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS quality_undo AS SELECT * FROM quality WHERE 0;
+    """)
 
     conn.commit()
     conn.close()
+
+
+def reset_tables():
+    """Drop and recreate all tables (useful if schema changed)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.executescript("""
+        DROP TABLE IF EXISTS stock_list;
+        DROP TABLE IF EXISTS procurement;
+        DROP TABLE IF EXISTS industrialization;
+        DROP TABLE IF EXISTS quality;
+        DROP TABLE IF EXISTS procurement_undo;
+        DROP TABLE IF EXISTS industrialization_undo;
+        DROP TABLE IF EXISTS quality_undo;
+    """)
+    conn.commit()
+    conn.close()
+    init_db()
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -83,7 +113,13 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         norm = re.sub(r'[^a-z0-9]', '_', str(col).lower())
         norm = re.sub(r'_+', '_', norm).strip('_')
         col_map[col] = norm
-    return df.rename(columns=col_map)
+    df = df.rename(columns=col_map)
+
+    # normalize stockcodes
+    if "stockcode" in df.columns:
+        df["stockcode"] = df["stockcode"].astype(str).str.strip().str.upper()
+
+    return df
 
 
 def try_date(x):
@@ -133,7 +169,7 @@ def get_projects():
 
 
 def save_table(df, project_id, table_name):
-    """UPSERT table rows (no duplication)."""
+    """UPSERT rows, saving current table state into undo before overwriting."""
     df = normalize_columns(df)
 
     schema = {
@@ -141,25 +177,19 @@ def save_table(df, project_id, table_name):
         "industrialization": ["stockcode", "description", "new_supplier", "fai_delivery_date", "first_po_delivery_date"],
         "quality": ["stockcode", "description", "fai_status", "fai_number", "fitcheck_ac", "fitcheck_date", "fitcheck_status"],
     }
-
     if table_name not in schema:
         raise ValueError(f"Unknown table {table_name}")
 
-    # restrict
     for col in schema[table_name]:
         if col not in df.columns:
             df[col] = None
     df = df[schema[table_name]]
-
-    # dedupe by stockcode
     df = df.drop_duplicates(subset=["stockcode"], keep="last")
 
-    # clean dates
     for col in ["next_shortage_date", "fai_delivery_date", "first_po_delivery_date", "fitcheck_date"]:
         if col in df.columns:
             df[col] = df[col].apply(try_date)
 
-    # defaults for quality
     if table_name == "quality":
         df["fai_status"] = df["fai_status"].fillna("Not Submitted")
         df["fitcheck_status"] = df["fitcheck_status"].fillna("")
@@ -167,18 +197,35 @@ def save_table(df, project_id, table_name):
     conn = get_connection()
     cur = conn.cursor()
 
-    for _, row in df.iterrows():
-        placeholders = ", ".join("?" * (len(row) + 1))
-        columns = ", ".join(["project_id"] + list(df.columns))
-        updates = ", ".join([f"{c}=excluded.{c}" for c in df.columns if c not in ["stockcode"]])
+    # save undo snapshot
+    cur.execute(f"DELETE FROM {table_name}_undo WHERE project_id=?", (project_id,))
+    cur.execute(f"INSERT INTO {table_name}_undo SELECT * FROM {table_name} WHERE project_id=?", (project_id,))
 
+    # upsert each row
+    for _, row in df.iterrows():
+        columns = ["project_id"] + list(df.columns)
+        placeholders = ", ".join("?" * len(columns))
+        updates = ", ".join([f"{c}=excluded.{c}" for c in df.columns if c not in ["stockcode"]])
         sql = f"""
-            INSERT INTO {table_name} ({columns})
+            INSERT INTO {table_name} ({", ".join(columns)})
             VALUES ({placeholders})
             ON CONFLICT(project_id, stockcode) DO UPDATE SET {updates}
         """
         cur.execute(sql, (project_id,) + tuple(row))
 
+    conn.commit()
+    conn.close()
+
+
+def undo_last_save(project_id, table_name):
+    """Restore last saved version of a table from its undo copy."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM {table_name} WHERE project_id=?", (project_id,))
+    cur.execute(f"""
+        INSERT INTO {table_name}
+        SELECT * FROM {table_name}_undo WHERE project_id=?
+    """, (project_id,))
     conn.commit()
     conn.close()
 
