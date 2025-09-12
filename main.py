@@ -8,7 +8,7 @@ db_utils.init_db()
 
 st.title("📊 Industrialization Tracker")
 
-# ---------- Create new project ----------
+# ---------- Project creation ----------
 with st.expander("➕ Create New Project"):
     templates = {
         "Procurement": ["StockCode", "Description", "Current_Supplier", "AC_Coverage", "Next_Shortage_Date"],
@@ -48,7 +48,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["📌 Summary", "📦 Procurement", "🏭 Indu
 # ---------- Summary ----------
 with tab1:
     st.subheader("📌 Project Summary")
-
     if st.button("🔄 Refresh Summary"):
         st.session_state["refresh_summary"] = True
 
@@ -64,16 +63,13 @@ with tab1:
         tuples = [
             ("General", "[A] StockCode"),
             ("General", "[B] Description"),
-
             ("Procurement", "[C] Current Supplier"),
             ("Procurement", "[D] AC Coverage"),
             ("Procurement", "[E] Next Shortage Date"),
-
             ("Industrialization", "[F] New Supplier"),
             ("Industrialization", "[G] FAI Delivery Date"),
             ("Industrialization", "[H] 1st Production PO Delivery Date"),
             ("Industrialization", "[I] Overlap (Days)"),
-
             ("Quality", "[J] FAI Status"),
             ("Quality", "[K] FAI Number"),
             ("Quality", "[L] Fitcheck AC"),
@@ -107,6 +103,9 @@ with tab2:
     if st.button("Save Procurement Changes"):
         db_utils.save_table(edited, pid, "procurement")
         st.success("Procurement changes saved.")
+    if st.button("↩️ Undo Procurement Save"):
+        db_utils.undo_last_save(pid, "procurement")
+        st.warning("Procurement reverted to last save.")
 
 # ---------- Industrialization ----------
 with tab3:
@@ -131,6 +130,9 @@ with tab3:
     if st.button("Save Industrialization Changes"):
         db_utils.save_table(edited, pid, "industrialization")
         st.success("Industrialization changes saved.")
+    if st.button("↩️ Undo Industrialization Save"):
+        db_utils.undo_last_save(pid, "industrialization")
+        st.warning("Industrialization reverted to last save.")
 
 # ---------- Quality ----------
 with tab4:
@@ -174,3 +176,6 @@ with tab4:
     if st.button("Save Quality Changes"):
         db_utils.save_table(edited, pid, "quality")
         st.success("Quality changes saved.")
+    if st.button("↩️ Undo Quality Save"):
+        db_utils.undo_last_save(pid, "quality")
+        st.warning("Quality reverted to last save.")
